@@ -1046,10 +1046,23 @@ class EnhancedProxyAggregator:
             source = item['source']
             processed += 1
             
+        for item in self.raw_nodes:
+            node = item['node']
+            source = item['source']
+            processed += 1
+            
             if processed % 5000 == 0:
                 print(f"  🔄 {processed}/{len(self.raw_nodes)}")
             
             clean_node = self.filter.clean_node(node)
+
+            # --- НОВЫЙ ДЕБАГ (ВМЕСТО СТАРОГО КРИВОГО) ---
+            if stats['structure'] < 5: 
+                print(f"--- DEBUG START ---")
+                print(f"RAW FROM LIST: {repr(node)}")
+                print(f"AFTER CLEAN: {repr(clean_node)}")
+                print(f"--- DEBUG END ---")
+            # --------------------------------------------
             
             if not self.filter.validate_node_structure(clean_node):
                 stats['structure'] += 1
