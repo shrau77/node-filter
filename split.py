@@ -1,7 +1,7 @@
 import os
 
 # Имя файла, куда ты вставишь все свои 50+ ссылок
-INPUT_FILE = 'all_sources.txt'
+INPUT_FILE = 'sources.txt'
 # По сколько источников давать одному монолиту за раз
 CHUNKS_SIZE = 5 
 
