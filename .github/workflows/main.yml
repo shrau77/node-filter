@@ -51,7 +51,7 @@ jobs:
           # Подменяем источники для текущего потока
           mv src_part_${{ matrix.chunk }}.txt sources.txt
           # Запуск твоего файла
-          python "говнокод 3000 в4.py"
+          python "update.py"
           # Сохраняем результат этого потока под уникальным именем
           # ВАЖНО: Монолит должен выдавать файл sub.txt
           mv sub.txt result_${{ matrix.chunk }}.txt
