@@ -1,0 +1,91 @@
+name: Matrix Node Refiner
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */4 * * *'
+
+jobs:
+  split-sources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Splitter
+        run: python split.py
+        
+      - name: Upload Source Chunks
+        uses: actions/upload-artifact@v4
+        with:
+          name: source_chunks
+          path: src_part_*.txt
+
+  process-nodes:
+    needs: split-sources
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Если у тебя будет больше 10 чанков (больше 50 ссылок), добавь сюда "10", "11" и т.д.
+        chunk: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09"]
+      fail-fast: false
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install Dependencies
+        run: pip install aiohttp validators tldextract # Добавь сюда другие либы, если нужны
+      
+      - name: Download Chunks
+        uses: actions/download-artifact@v4
+        with:
+          name: source_chunks
+          
+      - name: Run Monolith
+        run: |
+          # Подменяем источники для текущего потока
+          mv src_part_${{ matrix.chunk }}.txt sources.txt
+          # Запуск твоего файла (кавычки важны из-за пробелов в названии)
+          python "говнокод 3000 в4.py"
+          # Сохраняем результат этого потока под уникальным именем
+          mv sub.txt result_${{ matrix.chunk }}.txt
+          
+      - name: Upload Result Chunk
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.chunk }}
+          path: result_${{ matrix.chunk }}.txt
+
+  merge-and-push:
+    needs: process-nodes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          merge-multiple: true
+          
+      - name: Merge and Push
+        env:
+          MY_TOKEN: ${{ secrets.MY_REPO_TOKEN }}
+        run: |
+          # Склеиваем всё в один файл, убираем дубли и пустые строки
+          cat result_*.txt | sort -u | sed '/^$/d' > final_elite.txt
+          
+          # Клонируем основную репу
+          git clone https://x-access-token:${MY_TOKEN}@github.com/ТВОЙ_НИК/ОСНОВНАЯ_РЕПА.git main_repo
+          
+          # Обновляем файл в основной репе
+          cp final_elite.txt main_repo/vless_top_verified.txt
+          
+          cd main_repo
+          git config user.name "MatrixRefinerBot"
+          git config user.email "bot@matrix.com"
+          git add vless_top_verified.txt
+          git commit -m "Update nodes via Matrix Filter [skip ci]" || exit 0
+          git push
