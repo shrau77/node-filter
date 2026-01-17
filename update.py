@@ -1112,10 +1112,10 @@ class EnhancedProxyAggregator:
         rest_nodes = [n for n in self.filtered_nodes if n['score'] < 500]
         
         # Берем 8000 элитных и 2000 остальных
-        nodes_to_check = elite_nodes[:MAX_NODES_TO_CHECK_ELITE] + rest_nodes[:MAX_NODES_TO_CHECK_REST]
+        nodes_to_check = elite_nodes + rest_nodes
         
-        print(f"  🔡 Элитных (score >= 500): {min(len(elite_nodes), MAX_NODES_TO_CHECK_ELITE)}")
-        print(f"  🔡 Остальных (score < 500): {min(len(rest_nodes), MAX_NODES_TO_CHECK_REST)}")
+        print(f"  🔡 Элитных (score >= 500): {len(elite_nodes)}") 
+        print(f"  🔡 Остальных (score < 500): {len(rest_nodes)}")
         print(f"  🔡 Всего к проверке: {len(nodes_to_check)} нод")
         
         nodes_with_sources = [(n['node'], n['source']) for n in nodes_to_check]
