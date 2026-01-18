@@ -24,7 +24,7 @@ jobs:
       - name: Fetch Ultra Elite Nodes
         run: |
           # Скачиваем файл из твоей основной репы
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/ultra_elite.txt" -o input.txt
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/ultra_elite.txt" -o proxies.txt
 
       - name: Prepare and Run Go Checker
         run: |
