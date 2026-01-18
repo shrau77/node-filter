@@ -56,3 +56,20 @@ jobs:
           # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойдет дальше
           git commit -m "L7 Update (Scheduled): $(date +'%Y-%m-%d %H:%M')" || exit 0
           git push
+      - name: Send Summary to Telegram
+        if: success()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Считаем количество строк в файлах (учитываем, что файлов может не быть)
+          UF=$([ -f uf.txt ] && grep -c "://" uf.txt || echo 0)
+          FAST=$([ -f fast.txt ] && grep -c "://" fast.txt || echo 0)
+          NORM=$([ -f norm.txt ] && grep -c "://" norm.txt || echo 0)
+          
+          MESSAGE="🚀 *L7 Check Results* 🚀%0A%0A💎 *Ultra Fast:* $UF%0A⚡ *Fast:* $FAST%0A✅ *Normal:* $NORM%0A%0A📦 _Results pushed to HPP_"
+          
+          curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            -d "chat_id=$CHAT_ID" \
+            -d "text=$MESSAGE" \
+            -d "parse_mode=Markdown"
