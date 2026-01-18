@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -172,6 +171,7 @@ func readProxyList(filename string) ([]*ProxyNode, error) {
 
 func parseProxyLink(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Config: make(map[string]interface{})}
+	_ = node
 
 	if strings.HasPrefix(link, "vless://") {
 		return parseVLESS(link)
@@ -190,6 +190,7 @@ func parseProxyLink(link string) (*ProxyNode, error) {
 
 func parseVLESS(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "vless", Config: make(map[string]interface{})}
+	_ = node
 
 	re := regexp.MustCompile(`vless://([^@]+)@([^:]+):(\d+)\?(.+)`)
 	matches := re.FindStringSubmatch(link)
@@ -248,6 +249,7 @@ func parseTrojan(link string) (*ProxyNode, error) {
 
 func parseShadowsocks(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "shadowsocks", Config: make(map[string]interface{})}
+	_ = node
 
 	link = strings.TrimPrefix(link, "ss://")
 	parts := strings.Split(link, "#")
@@ -283,6 +285,7 @@ func parseHysteria2(link string) (*ProxyNode, error) {
 
 func parseTUIC(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "tuic", Config: make(map[string]interface{})}
+	_ = node
 	node.Name = "TUIC Node"
 	return node, nil
 }
@@ -646,9 +649,10 @@ func countLinesInFile(filename string) int {
 	defer file.Close()
 
 	count := 0
-	scanner := bufio.Scanner(file)
+	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		count++
 	}
 	return count
 }
+ 
