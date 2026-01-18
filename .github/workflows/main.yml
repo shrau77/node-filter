@@ -1,93 +1,58 @@
-name: Matrix Node Refiner
-
+name: L7 Smart Checker (Scheduled)
 on:
-  workflow_dispatch:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */3 * * *' # Запуск каждые 3 часа
+  workflow_dispatch: # Чтобы ты мог запустить проверку вручную кнопкой
 
 jobs:
-  split-sources:
+  check-and-update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Run Splitter
-        run: python split.py
-        
-      - name: Upload Source Chunks
-        uses: actions/upload-artifact@v4
-        with:
-          name: source_chunks
-          path: src_part_*.txt
+      - name: Checkout Checker Code
+        uses: actions/checkout@v4
 
-  process-nodes:
-    needs: split-sources
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # Убедись, что количество чанков соответствует тому, что выдает split.py
-        chunk: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15"]
-      fail-fast: false
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          python-version: '3.10'
-          
-      - name: Install Dependencies
-        run: pip install aiohttp validators tldextract
-      
-      - name: Download Chunks
-        uses: actions/download-artifact@v4
+          go-version: '1.21'
+
+      - name: Setup Warp
+        uses: fscarmen/warp-on-actions@v1.1
         with:
-          name: source_chunks
-          path: .
-          
-      - name: Run Monolith
+          stack: dual
+
+      - name: Fetch Ultra Elite Nodes
         run: |
-          # Подменяем источники для текущего потока
-          mv src_part_${{ matrix.chunk }}.txt sources.txt
-          # Запуск твоего файла
-          python "update.py"
-          # Сохраняем результат этого потока под уникальным именем
-          # ВАЖНО: Монолит должен выдавать файл sub.txt
-          mv sub.txt result_${{ matrix.chunk }}.txt
-          
-      - name: Upload Result Chunk
-        uses: actions/upload-artifact@v4
-        with:
-          name: result-${{ matrix.chunk }}
-          path: result_${{ matrix.chunk }}.txt
+          # Скачиваем файл из твоей основной репы
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/ultra_elite.txt" -o input.txt
 
-  merge-and-push:
-    needs: process-nodes
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download All Results
-        uses: actions/download-artifact@v4
-        with:
-          pattern: result-*
-          merge-multiple: true
+      - name: Prepare and Run Go Checker
+        run: |
+          # Инициализация и зависимости (если Go код их требует)
+          go mod init proxy-checker || true
+          go get github.com/oschwald/geoip2-golang
+          go get golang.org/x/net/proxy
           
-      - name: Merge and Push
+          # Сборка и запуск
+          go build -o checker main.go
+          ./checker --input input.txt
+
+      - name: Push Results to HPP
         env:
-          MY_TOKEN: ${{ secrets.MY_REPO_TOKEN }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # Склеиваем всё в один файл, убираем дубли и пустые строки
-          cat result_*.txt | sort -u | sed '/^$/d' > final_elite.txt
+          # Клонируем основную репу для записи результатов
+          git clone https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/shrau77/hpp.git target_repo
           
-          # Клонируем твою основную репу hpp
-          git clone https://x-access-token:${MY_TOKEN}@github.com/shrau77/hpp.git main_repo
+          # Переносим файлы скоростей в основную репу
+          # Скрипт Клода должен генерировать именно эти названия
+          cp uf.txt fast.txt norm.txt target_repo/
           
-          # Обновляем файл в основной репе
-          cp final_elite.txt main_repo/vless_top_verified.txt
+          cd target_repo
+          git config user.name "L7-Checker-Bot"
+          git config user.email "bot@github.com"
           
-          cd main_repo
-          git config user.name "MatrixRefinerBot"
-          git config user.email "bot@matrix.com"
-          git add vless_top_verified.txt
-          git commit -m "Update nodes via Matrix Filter [skip ci]" || exit 0
+          git add uf.txt fast.txt norm.txt
+          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойдет дальше
+          git commit -m "L7 Update (Scheduled): $(date +'%Y-%m-%d %H:%M')" || exit 0
           git push
