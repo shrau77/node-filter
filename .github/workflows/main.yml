@@ -1,7 +1,7 @@
 name: L7 Smart Checker (Scheduled)
 on:
   schedule:
-    - cron: '0 */3 * * *' # Запуск каждые 3 часа
+    - cron: '0 */4 * * *' # Запуск каждые 3 часа
   workflow_dispatch: # Чтобы ты мог запустить проверку вручную кнопкой
 
 jobs:
