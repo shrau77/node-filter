@@ -1,7 +1,7 @@
 name: L7 Smart Checker (Matrix)
 on:
   schedule:
-    - cron: '17 */4 * * *' # Запуск каждые 4 часа
+    - cron: '17 */4 * * *' # Запуск каждые 3 часа
   workflow_dispatch: # Позволяет запустить workflow вручную через кнопку в интерфейсе GitHub
 
 # Требуется permissions для пуша в репозиторий
@@ -47,8 +47,7 @@ jobs:
           # Создаем директорию для частей
           mkdir -p input_chunks
 
-          # Разбиваем файл
-          split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
+          # Разбиваем файл          split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
 
           # Подсчитываем количество получившихся файлов (job'ов)
           NUM_JOBS=$(ls input_chunks/chunk_* | wc -l)
@@ -84,16 +83,30 @@ jobs:
           echo "Generated matrix JSON: $MATRIX_JSON"
           echo "matrix_json=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
+      # Загружаем директорию с чанками как артефакт
+      - name: Upload Input Chunks
+        uses: actions/upload-artifact@v4
+        with:
+          name: input-chunks
+          path: input_chunks/
+          retention-days: 1 # Хранить коротко, т.к. используется сразу
+
+
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
     strategy:
-      matrix:
-        # Используем результат из prepare-inputs и преобразуем его в объект
+      matrix:        # Используем результат из prepare-inputs и преобразуем его в объект
         include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
       - name: Checkout Checker Code
         uses: actions/checkout@v4
+
+      - name: Download Input Chunks
+        uses: actions/download-artifact@v4
+        with:
+          name: input-chunks
+          path: input_chunks # Скачиваем в ту же директорию
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -110,10 +123,12 @@ jobs:
         run: |
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o whitelist.txt || echo "whitelist.txt not found, creating empty one." && touch whitelist.txt
 
-      # Копируем нужный чанк из директории, созданной в prepare-inputs
+      # Копируем нужный чанк из директории, созданной в prepare-inputs (теперь скачанной)
       - name: Copy Input Chunk
         run: |
           # Используем имя файла из матрицы
+          echo "Looking for chunk: input_chunks/${{ matrix.input_file }}"
+          ls -la input_chunks/ # Показать содержимое директории для дебага
           cp "input_chunks/${{ matrix.input_file }}" input.txt
           echo "Processing chunk: ${{ matrix.input_file }}"
           head -n 5 input.txt # Показать начало файла для дебага
@@ -130,8 +145,7 @@ jobs:
           ./checker -input input.txt -whitelist whitelist.txt
 
       # Результаты сохраняются как uf.txt, fast.txt, norm.txt в каждом job'е
-      # Эти файлы нужно как-то собрать в одном месте после завершения всех job'ов.
-      # Мы их сохраняем как артефакты.
+      # Эти файлы нужно как-то собрать в одном месте после завершения всех job'ов.      # Мы их сохраняем как артефакты.
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
@@ -141,6 +155,7 @@ jobs:
             fast.txt
             norm.txt
           retention-days: 1 # Хранить коротко, т.к. они будут собраны
+
 
   combine-results:
     needs: [prepare-inputs, check-chunks] # Зависит от обоих предыдущих job'ов
@@ -179,8 +194,7 @@ jobs:
             fi
           done
 
-          # Переименовываем для дальнейшего использования
-          mv combined_uf.txt uf.txt
+          # Переименовываем для дальнейшего использования          mv combined_uf.txt uf.txt
           mv combined_fast.txt fast.txt
           mv combined_norm.txt norm.txt
 
@@ -196,13 +210,14 @@ jobs:
           cd target_repo
           git config user.name "L7-Matrix-Checker-Bot"
           git config user.email "bot@github.com"
+
           # Копируем итоговые файлы в клон репо
           cp ../uf.txt .
           cp ../fast.txt .
           cp ../norm.txt .
 
           git add uf.txt fast.txt norm.txt
-          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойдет дальше
+          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойет дальше
           git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M')" || exit 0
           git push
 
