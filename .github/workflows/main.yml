@@ -12,7 +12,8 @@ jobs:
   prepare-inputs:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      # Используем строку, которую затем преобразуем в JSON в следующем job'e
+      matrix_json: ${{ steps.set-matrix.outputs.matrix_json }}
     steps:
       - name: Checkout Checker Code
         uses: actions/checkout@v4
@@ -39,48 +40,63 @@ jobs:
           echo "Total lines in combined input: $TOTAL_LINES"
 
           # Определяем размер блока (например, 1000 строк на job)
-          CHUNK_SIZE=1000
+          # Уменьшим размер, если вдруг возникнут проблемы с памятью/временем
+          CHUNK_SIZE=500
           echo "Chunk size: $CHUNK_SIZE"
 
           # Создаем директорию для частей
           mkdir -p input_chunks
 
-          # Разбиваем файл
-          split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
+          # Разбиваем файл          split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
+
           # Подсчитываем количество получившихся файлов (job'ов)
           NUM_JOBS=$(ls input_chunks/chunk_* | wc -l)
           echo "Number of jobs (chunks): $NUM_JOBS"
           echo "num_jobs=$NUM_JOBS" >> $GITHUB_OUTPUT
 
-      - name: Set Matrix
+      - name: Set Matrix JSON Output
         id: set-matrix
         run: |
-          # Генерируем JSON массив для matrix стратегии
+          # Инициализируем JSON массив
           MATRIX_JSON="["
+          FIRST_ENTRY=true
+          # Проходим по всем файлам чанков
           for FILENAME in input_chunks/chunk_*; do
-              if [ "$MATRIX_JSON" != "[" ]; then
-                  MATRIX_JSON="$MATRIX_JSON,"
-              fi
-              # Используем только имя файла для удобства
-              MATRIX_JSON="$MATRIX_JSON{\"input_file\":\"$FILENAME\"}"
+            # Получаем имя файла без пути
+            BASENAME=$(basename "$FILENAME")
+            # Экранируем кавычки и другие символы в имени файла для JSON
+            ESCAPED_NAME=$(printf '%s\n' "$BASENAME" | sed 's/"/\\"/g')
+            
+            # Если это не первый элемент, добавляем запятую
+            if [ "$FIRST_ENTRY" = false ]; then
+              MATRIX_JSON="$MATRIX_JSON,"
+            else
+              FIRST_ENTRY=false
+            fi
+            
+            # Добавляем объект с ключом input_file в JSON
+            MATRIX_JSON="$MATRIX_JSON{\"input_file\":\"$ESCAPED_NAME\"}"
           done
           MATRIX_JSON="$MATRIX_JSON]"
-          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
-          echo "Generated matrix: $MATRIX_JSON"
+          
+          # Выводим сгенерированный JSON в output
+          echo "Generated matrix JSON: $MATRIX_JSON"
+          echo "matrix_json=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
 
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
     strategy:
-      matrix: ${{ fromJson(needs.prepare-inputs.outputs.matrix) }}
+      matrix:
+        # Используем результат из prepare-inputs и преобразуем его в объект
+        include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
       - name: Checkout Checker Code
         uses: actions/checkout@v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
+        uses: actions/setup-go@v5        with:
           go-version: '1.21'
 
       - name: Setup Warp (если нужен для обхода)
@@ -93,10 +109,14 @@ jobs:
         run: |
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o whitelist.txt || echo "whitelist.txt not found, creating empty one." && touch whitelist.txt
 
-      # Копируем нужный чанк в временный input.txt для текущего job'а
+      # Копируем нужный чанк из директории, созданной в prepare-inputs
       - name: Copy Input Chunk
         run: |
-          cp "${{ matrix.input_file }}" input.txt
+          # Используем имя файла из матрицы
+          cp "input_chunks/${{ matrix.input_file }}" input.txt
+          echo "Processing chunk: ${{ matrix.input_file }}"
+          head -n 5 input.txt # Показать начало файла для дебага
+
       - name: Prepare and Run Go Checker
         run: |
           # Инициализация и зависимости (если Go код их требует)
@@ -125,8 +145,7 @@ jobs:
   combine-results:
     needs: [prepare-inputs, check-chunks] # Зависит от обоих предыдущих job'ов
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Checker Code (for scripts if needed)
+    steps:      - name: Checkout Checker Code (for scripts if needed)
         uses: actions/checkout@v4
 
       - name: Download All Result Artifacts
@@ -142,16 +161,20 @@ jobs:
 
           # Проходим по всем загруженным артефактам и объединяем файлы
           for dir in all_results/results-*/; do
-            if [ -f "$dir/uf.txt" ]; then
-              cat "$dir/uf.txt" >> combined_uf.txt
-              echo "Appended uf.txt from $dir"
-            fi            if [ -f "$dir/fast.txt" ]; then
-              cat "$dir/fast.txt" >> combined_fast.txt
-              echo "Appended fast.txt from $dir"
-            fi
-            if [ -f "$dir/norm.txt" ]; then
-              cat "$dir/norm.txt" >> combined_norm.txt
-              echo "Appended norm.txt from $dir"
+            if [ -d "$dir" ]; then
+              echo "Processing artifact directory: $dir"
+              if [ -f "$dir/uf.txt" ]; then
+                cat "$dir/uf.txt" >> combined_uf.txt
+                echo "Appended uf.txt from $dir"
+              fi
+              if [ -f "$dir/fast.txt" ]; then
+                cat "$dir/fast.txt" >> combined_fast.txt
+                echo "Appended fast.txt from $dir"
+              fi
+              if [ -f "$dir/norm.txt" ]; then
+                cat "$dir/norm.txt" >> combined_norm.txt
+                echo "Appended norm.txt from $dir"
+              fi
             fi
           done
 
@@ -172,14 +195,13 @@ jobs:
           cd target_repo
           git config user.name "L7-Matrix-Checker-Bot"
           git config user.email "bot@github.com"
-
           # Копируем итоговые файлы в клон репо
           cp ../uf.txt .
           cp ../fast.txt .
           cp ../norm.txt .
 
           git add uf.txt fast.txt norm.txt
-          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойдет дальше
+          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойет дальше
           git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M')" || exit 0
           git push
 
@@ -195,6 +217,7 @@ jobs:
           NORM=$([ -f norm.txt ] && grep -c "://" norm.txt || echo 0)
 
           MESSAGE="🚀 *L7 Matrix Check Results* 🚀%0A%0A💎 *Ultra Fast:* $UF%0A⚡ *Fast:* $FAST%0A✅ *Normal:* $NORM%0A%0A📦 _Results pushed to HPP_"
+
           curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID" \
             -d "text=$MESSAGE" \
