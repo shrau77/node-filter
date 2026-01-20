@@ -34,7 +34,6 @@ const (
 	TestURL           = "https://www.youtube.com/generate_204"
 	SpeedTestURL      = "https://download.microsoft.com/download/2/0/E/20E90413-712F-438C-988E-FDAA79A8AC3D/dotnetfx35.exe"
 	SpeedTestSize     = 2 * 1024 * 1024 // 2MB
-	// Установлены на 7 секунд согласно требованиям
 	TimeoutCheck      = 7 * time.Second
 	TimeoutSpeed      = 7 * time.Second
 	UltraFastSpeed    = 6.0 // Mbps
@@ -47,7 +46,8 @@ var (
 		"CA": "🇨🇦", "JP": "🇯🇵", "KR": "🇰🇷", "SG": "🇸🇬", "HK": "🇭🇰",
 		"TW": "🇹🇼", "AU": "🇦🇺", "RU": "🇷🇺", "CN": "🇨🇳", "IN": "🇮🇳",
 		"BR": "🇧🇷", "TR": "🇹🇷", "SE": "🇸🇪", "PL": "🇵🇱", "IT": "🇮🇹",
-		"ES": "🇪🇸", "CH": "🇨🇭", "FI": "🇫🇮", "NO": "🇳🇴", "DK": "🇩🇰",	}
+		"ES": "🇪🇸", "CH": "🇨🇭", "FI": "🇫🇮", "NO": "🇳🇴", "DK": "🇩🇰",
+	}
 )
 
 type ProxyNode struct {
@@ -96,9 +96,9 @@ func main() {
 	defer geoIPReader.Close()
 
 	// Чтение белого списка SNI
-	sniWhitelist, err := readSNIWhitelist(*whitelistFile)	if err != nil {
+	sniWhitelist, err := readSNIWhitelist(*whitelistFile)
+	if err != nil {
 		fmt.Printf("⚠️ Could not read SNI whitelist (%s), continuing without SNI checks: %v\n", *whitelistFile, err)
-		// Используем пустой список, чтобы избежать паники
 		sniWhitelist = []string{}
 	}
 
@@ -110,7 +110,7 @@ func main() {
 
 	fmt.Printf("📋 Loaded %d nodes\n", len(nodes))
 
-	results := processNodes(nodes, sniWhitelist) // Передаём список SNI
+	results := processNodes(nodes, sniWhitelist)
 	saveResults(results)
 	fmt.Println("✅ Processing completed")
 }
@@ -142,10 +142,13 @@ func downloadFile(filepath string, url string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	
 	out, err := os.Create(filepath)
 	if err != nil {
 		return err
-	}	defer out.Close()
+	}
+	defer out.Close()
+	
 	_, err = io.Copy(out, resp.Body)
 	return err
 }
@@ -164,7 +167,6 @@ func readSNIWhitelist(filename string) ([]string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Убираем лишние пробелы и точки в начале/конце
 		sni := strings.TrimSpace(line)
 		sni = strings.TrimPrefix(sni, ".")
 		if sni != "" {
@@ -194,11 +196,10 @@ func readProxyList(filename string) ([]*ProxyNode, error) {
 		}
 		nodes = append(nodes, node)
 	}
-	return nodes, scanner.Err()}
+	return nodes, scanner.Err()
+}
 
 func parseProxyLink(link string) (*ProxyNode, error) {
-	node := &ProxyNode{RawLink: link, Config: make(map[string]interface{})}
-
 	if strings.HasPrefix(link, "vless://") {
 		return parseVLESS(link)
 	} else if strings.HasPrefix(link, "trojan://") {
@@ -232,17 +233,20 @@ func parseVLESS(link string) (*ProxyNode, error) {
 	node.Config["encryption"] = params.Get("encryption")
 	node.Config["flow"] = params.Get("flow")
 	node.Config["type"] = params.Get("type")
-	// Извлекаем SNI
 	node.Config["sni"] = params.Get("sni")
 	node.Config["fp"] = params.Get("fp")
 	node.Config["pbk"] = params.Get("pbk")
 	node.Config["sid"] = params.Get("sid")
 	node.Name = params.Get("fragment")
 	if node.Name == "" {
-		node.Name, _ = url.QueryUnescape(strings.Split(link, "#")[1])
+		parts := strings.Split(link, "#")
+		if len(parts) > 1 {
+			node.Name, _ = url.QueryUnescape(parts[1])
+		}
 	}
 	return node, nil
 }
+
 func parseTrojan(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "trojan", Config: make(map[string]interface{})}
 
@@ -256,13 +260,15 @@ func parseTrojan(link string) (*ProxyNode, error) {
 	node.Port, _ = strconv.Atoi(matches[3])
 	params := parseQueryParams(matches[4])
 
-	// Извлекаем SNI
 	node.Config["sni"] = params.Get("sni")
 	node.Config["type"] = params.Get("type")
 	node.Config["security"] = params.Get("security")
 	node.Name = params.Get("fragment")
 	if node.Name == "" {
-		node.Name, _ = url.QueryUnescape(strings.Split(link, "#")[1])
+		parts := strings.Split(link, "#")
+		if len(parts) > 1 {
+			node.Name, _ = url.QueryUnescape(parts[1])
+		}
 	}
 	return node, nil
 }
@@ -275,24 +281,36 @@ func parseShadowsocks(link string) (*ProxyNode, error) {
 	if len(parts) > 1 {
 		node.Name, _ = url.QueryUnescape(parts[1])
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(strings.Split(parts[0], "@")[0])
+	
+	mainPart := parts[0]
+	atParts := strings.Split(mainPart, "@")
+	if len(atParts) < 2 {
+		return nil, fmt.Errorf("invalid shadowsocks link")
+	}
+	
+	decoded, err := base64.RawURLEncoding.DecodeString(atParts[0])
 	if err != nil {
-		decoded, _ = base64.StdEncoding.DecodeString(strings.Split(parts[0], "@")[0])
+		decoded, _ = base64.StdEncoding.DecodeString(atParts[0])
 	}
 	methodPass := strings.SplitN(string(decoded), ":", 2)
 	if len(methodPass) == 2 {
 		node.Config["method"] = methodPass[0]
 		node.Config["password"] = methodPass[1]
 	}
-	serverPart := strings.Split(parts[0], "@")[1]
+	
+	serverPart := atParts[1]
 	serverPort := strings.Split(serverPart, ":")
+	if len(serverPort) < 2 {
+		return nil, fmt.Errorf("invalid shadowsocks server:port")
+	}
 	node.Address = serverPort[0]
 	node.Port, _ = strconv.Atoi(serverPort[1])
 	return node, nil
 }
 
 func parseHysteria2(link string) (*ProxyNode, error) {
-	node := &ProxyNode{RawLink: link, Protocol: "hysteria2", Config: make(map[string]interface{})}	node.Name = "Hysteria2 Node"
+	node := &ProxyNode{RawLink: link, Protocol: "hysteria2", Config: make(map[string]interface{})}
+	node.Name = "Hysteria2 Node"
 	return node, nil
 }
 
@@ -314,7 +332,7 @@ func processNodes(nodes []*ProxyNode, sniWhitelist []string) []CheckResult {
 
 	for i := 0; i < WorkerCount; i++ {
 		wg.Add(1)
-		go worker(&wg, nodeChan, resultChan, sniWhitelist) // Передаём список SNI в воркер
+		go worker(&wg, nodeChan, resultChan, sniWhitelist)
 	}
 
 	for _, node := range nodes {
@@ -341,10 +359,11 @@ func processNodes(nodes []*ProxyNode, sniWhitelist []string) []CheckResult {
 	}
 	return results
 }
+
 func worker(wg *sync.WaitGroup, nodeChan <-chan *ProxyNode, resultChan chan<- CheckResult, sniWhitelist []string) {
 	defer wg.Done()
 	for node := range nodeChan {
-		result := checkNode(node, sniWhitelist) // Передаём список SNI в checkNode
+		result := checkNode(node, sniWhitelist)
 		resultChan <- result
 	}
 }
@@ -386,11 +405,12 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 	}
 
 	speed := measureSpeed(port)
-	if speed < 1.0 { // Порог 1.0 Мбит/с
+	if speed < 1.0 {
 		return result
 	}
 
-	countryID := getCountryCode(node.Address)	result.Speed = speed
+	countryID := getCountryCode(node.Address)
+	result.Speed = speed
 	result.CountryID = countryID
 	result.Success = true
 	return result
@@ -439,7 +459,8 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 			"protocol": "trojan",
 			"settings": map[string]interface{}{
 				"servers": []map[string]interface{}{
-					{						"address":  node.Address,
+					{
+						"address":  node.Address,
 						"port":     node.Port,
 						"password": node.Config["password"],
 					},
@@ -484,14 +505,15 @@ func buildStreamSettings(node *ProxyNode) map[string]interface{} {
 		streamSettings["security"] = "tls"
 		streamSettings["tlsSettings"] = map[string]interface{}{
 			"serverName":  node.Config["sni"],
-			"fingerprint": "randomized", // Добавляем fingerprint для маскировки
+			"fingerprint": "randomized",
 		}
 	} else if security == "reality" {
 		streamSettings["security"] = "reality"
-		streamSettings["realitySettings"] = map[string]interface{}{			"serverName":  node.Config["sni"],
+		streamSettings["realitySettings"] = map[string]interface{}{
+			"serverName":  node.Config["sni"],
 			"publicKey":   node.Config["pbk"],
 			"shortId":     node.Config["sid"],
-			"fingerprint": "randomized", // Добавляем fingerprint для маскировки
+			"fingerprint": "randomized",
 		}
 	}
 	return streamSettings
@@ -506,7 +528,6 @@ func getConfigValue(config map[string]interface{}, key, defaultVal string) strin
 	return defaultVal
 }
 
-// isTargetSNI проверяет, заканчивается ли SNI ноды на одну из строк из белого списка.
 func isTargetSNI(nodeSNI string, whitelist []string) bool {
 	if nodeSNI == "" {
 		return false
@@ -533,11 +554,11 @@ func checkConnectivity(port int) bool {
 			MaxIdleConns:        1,
 			MaxIdleConnsPerHost: 1,
 		},
-		// Используем глобальный таймаут
 		Timeout: TimeoutCheck,
 	}
 
-	resp, err := client.Get(TestURL)	if err != nil {
+	resp, err := client.Get(TestURL)
+	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
@@ -558,7 +579,6 @@ func measureSpeed(port int) float64 {
 			MaxIdleConns:        1,
 			MaxIdleConnsPerHost: 1,
 		},
-		// Используем глобальный таймаут
 		Timeout: TimeoutSpeed,
 	}
 
@@ -586,7 +606,8 @@ func measureSpeed(port int) float64 {
 	if duration == 0 {
 		return 0
 	}
-	mbps := (float64(downloaded) * 8) / (duration * 1024 * 1024)	return mbps
+	mbps := (float64(downloaded) * 8) / (duration * 1024 * 1024)
+	return mbps
 }
 
 func getCountryCode(address string) string {
@@ -659,4 +680,4 @@ func countLinesInFile(filename string) int {
 		count++
 	}
 	return count
-}
+} 
