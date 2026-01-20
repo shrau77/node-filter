@@ -84,6 +84,7 @@ jobs:
           echo "matrix_json=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
       # Загружаем директорию с чанками как артефакт
+      # Этот шаг ДОЛЖЕН быть ПОСЛЕ создания директории input_chunks в шаге 'Combine and Split Lists'
       - name: Upload Input Chunks
         uses: actions/upload-artifact@v4
         with:
@@ -95,8 +96,8 @@ jobs:
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
-    strategy:
-      matrix:        # Используем результат из prepare-inputs и преобразуем его в объект
+    strategy:      matrix:
+        # Используем результат из prepare-inputs и преобразуем его в объект
         include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
       - name: Checkout Checker Code
@@ -144,8 +145,8 @@ jobs:
           go build -o checker main.go
           ./checker -input input.txt -whitelist whitelist.txt
 
-      # Результаты сохраняются как uf.txt, fast.txt, norm.txt в каждом job'е
-      # Эти файлы нужно как-то собрать в одном месте после завершения всех job'ов.      # Мы их сохраняем как артефакты.
+      # Результаты сохраняются как uf.txt, fast.txt, norm.txt в каждом job'е      # Эти файлы нужно как-то собрать в одном месте после завершения всех job'ов.
+      # Мы их сохраняем как артефакты.
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
@@ -193,8 +194,8 @@ jobs:
               fi
             fi
           done
-
-          # Переименовываем для дальнейшего использования          mv combined_uf.txt uf.txt
+          # Переименовываем для дальнейшего использования
+          mv combined_uf.txt uf.txt
           mv combined_fast.txt fast.txt
           mv combined_norm.txt norm.txt
 
