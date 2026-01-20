@@ -1,7 +1,7 @@
 name: L7 Smart Checker (Matrix)
 on:
   schedule:
-    - cron: '17 */4 * * *' # Запуск каждые 3 часа
+    - cron: '17 */4 * * *' # Запуск каждые 4 часа
   workflow_dispatch: # Позволяет запустить workflow вручную через кнопку в интерфейсе GitHub
 
 # Требуется permissions для пуша в репозиторий
@@ -47,7 +47,8 @@ jobs:
           # Создаем директорию для частей
           mkdir -p input_chunks
 
-          # Разбиваем файл          split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
+          # Разбиваем файл
+          split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
 
           # Подсчитываем количество получившихся файлов (job'ов)
           NUM_JOBS=$(ls input_chunks/chunk_* | wc -l)
@@ -83,7 +84,6 @@ jobs:
           echo "Generated matrix JSON: $MATRIX_JSON"
           echo "matrix_json=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
-
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
@@ -96,7 +96,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5        with:
+        uses: actions/setup-go@v5
+        with:
           go-version: '1.21'
 
       - name: Setup Warp (если нужен для обхода)
@@ -141,11 +142,11 @@ jobs:
             norm.txt
           retention-days: 1 # Хранить коротко, т.к. они будут собраны
 
-
   combine-results:
     needs: [prepare-inputs, check-chunks] # Зависит от обоих предыдущих job'ов
     runs-on: ubuntu-latest
-    steps:      - name: Checkout Checker Code (for scripts if needed)
+    steps:
+      - name: Checkout Checker Code (for scripts if needed)
         uses: actions/checkout@v4
 
       - name: Download All Result Artifacts
@@ -201,7 +202,7 @@ jobs:
           cp ../norm.txt .
 
           git add uf.txt fast.txt norm.txt
-          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойет дальше
+          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойдет дальше
           git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M')" || exit 0
           git push
 
