@@ -659,4 +659,4 @@ func countLinesInFile(filename string) int {
 		count++
 	}
 	return count
-} 
+}
