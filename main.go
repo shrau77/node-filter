@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -21,7 +22,7 @@ import (
 	"time"
 
 	"github.com/oschwald/geoip2-golang"
-	"golang.org/x/net/proxy"
+	goproxy "golang.org/x/net/proxy"
 )
 
 const (
@@ -33,8 +34,9 @@ const (
 	TestURL           = "https://www.youtube.com/generate_204"
 	SpeedTestURL      = "https://download.microsoft.com/download/2/0/E/20E90413-712F-438C-988E-FDAA79A8AC3D/dotnetfx35.exe"
 	SpeedTestSize     = 2 * 1024 * 1024 // 2MB
-	TimeoutCheck      = 8 * time.Second
-	TimeoutSpeed      = 6 * time.Second
+	// Установлены на 7 секунд согласно требованиям
+	TimeoutCheck      = 7 * time.Second
+	TimeoutSpeed      = 7 * time.Second
 	UltraFastSpeed    = 6.0 // Mbps
 	FastSpeed         = 3.0 // Mbps
 )
@@ -45,8 +47,7 @@ var (
 		"CA": "🇨🇦", "JP": "🇯🇵", "KR": "🇰🇷", "SG": "🇸🇬", "HK": "🇭🇰",
 		"TW": "🇹🇼", "AU": "🇦🇺", "RU": "🇷🇺", "CN": "🇨🇳", "IN": "🇮🇳",
 		"BR": "🇧🇷", "TR": "🇹🇷", "SE": "🇸🇪", "PL": "🇵🇱", "IT": "🇮🇹",
-		"ES": "🇪🇸", "CH": "🇨🇭", "FI": "🇫🇮", "NO": "🇳🇴", "DK": "🇩🇰",
-	}
+		"ES": "🇪🇸", "CH": "🇨🇭", "FI": "🇫🇮", "NO": "🇳🇴", "DK": "🇩🇰",	}
 )
 
 type ProxyNode struct {
@@ -77,6 +78,10 @@ var portCounter int32 = MinPortRange
 func main() {
 	fmt.Println("🚀 Starting L7 Proxy Checker")
 
+	inputFile := flag.String("input", "proxies.txt", "Path to the input proxy list file")
+	whitelistFile := flag.String("whitelist", "whitelist.txt", "Path to the SNI whitelist file")
+	flag.Parse()
+
 	if err := setupDependencies(); err != nil {
 		fmt.Printf("❌ Failed to setup dependencies: %v\n", err)
 		os.Exit(1)
@@ -90,7 +95,14 @@ func main() {
 	}
 	defer geoIPReader.Close()
 
-	nodes, err := readProxyList("proxies.txt")
+	// Чтение белого списка SNI
+	sniWhitelist, err := readSNIWhitelist(*whitelistFile)	if err != nil {
+		fmt.Printf("⚠️ Could not read SNI whitelist (%s), continuing without SNI checks: %v\n", *whitelistFile, err)
+		// Используем пустой список, чтобы избежать паники
+		sniWhitelist = []string{}
+	}
+
+	nodes, err := readProxyList(*inputFile)
 	if err != nil {
 		fmt.Printf("❌ Failed to read proxy list: %v\n", err)
 		os.Exit(1)
@@ -98,9 +110,8 @@ func main() {
 
 	fmt.Printf("📋 Loaded %d nodes\n", len(nodes))
 
-	results := processNodes(nodes)
+	results := processNodes(nodes, sniWhitelist) // Передаём список SNI
 	saveResults(results)
-
 	fmt.Println("✅ Processing completed")
 }
 
@@ -116,14 +127,12 @@ func setupDependencies() error {
 		os.Chmod("xray", 0755)
 		os.Remove("xray.zip")
 	}
-
 	if _, err := os.Stat("GeoLite2-Country.mmdb"); os.IsNotExist(err) {
 		fmt.Println("📥 Downloading GeoIP database...")
 		if err := downloadFile("GeoLite2-Country.mmdb", GeoIPURL); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -133,15 +142,36 @@ func downloadFile(filepath string, url string) error {
 		return err
 	}
 	defer resp.Body.Close()
-
 	out, err := os.Create(filepath)
 	if err != nil {
 		return err
-	}
-	defer out.Close()
-
+	}	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+func readSNIWhitelist(filename string) ([]string, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var snis []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Убираем лишние пробелы и точки в начале/конце
+		sni := strings.TrimSpace(line)
+		sni = strings.TrimPrefix(sni, ".")
+		if sni != "" {
+			snis = append(snis, sni)
+		}
+	}
+	return snis, scanner.Err()
 }
 
 func readProxyList(filename string) ([]*ProxyNode, error) {
@@ -158,20 +188,16 @@ func readProxyList(filename string) ([]*ProxyNode, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-
 		node, err := parseProxyLink(line)
 		if err != nil {
 			continue
 		}
 		nodes = append(nodes, node)
 	}
-
-	return nodes, scanner.Err()
-}
+	return nodes, scanner.Err()}
 
 func parseProxyLink(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Config: make(map[string]interface{})}
-	_ = node
 
 	if strings.HasPrefix(link, "vless://") {
 		return parseVLESS(link)
@@ -190,14 +216,12 @@ func parseProxyLink(link string) (*ProxyNode, error) {
 
 func parseVLESS(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "vless", Config: make(map[string]interface{})}
-	_ = node
 
 	re := regexp.MustCompile(`vless://([^@]+)@([^:]+):(\d+)\?(.+)`)
 	matches := re.FindStringSubmatch(link)
 	if len(matches) < 5 {
 		return nil, fmt.Errorf("invalid vless link")
 	}
-
 	uuid := matches[1]
 	node.Address = matches[2]
 	node.Port, _ = strconv.Atoi(matches[3])
@@ -208,19 +232,17 @@ func parseVLESS(link string) (*ProxyNode, error) {
 	node.Config["encryption"] = params.Get("encryption")
 	node.Config["flow"] = params.Get("flow")
 	node.Config["type"] = params.Get("type")
+	// Извлекаем SNI
 	node.Config["sni"] = params.Get("sni")
 	node.Config["fp"] = params.Get("fp")
 	node.Config["pbk"] = params.Get("pbk")
 	node.Config["sid"] = params.Get("sid")
 	node.Name = params.Get("fragment")
-
 	if node.Name == "" {
 		node.Name, _ = url.QueryUnescape(strings.Split(link, "#")[1])
 	}
-
 	return node, nil
 }
-
 func parseTrojan(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "trojan", Config: make(map[string]interface{})}
 
@@ -229,63 +251,53 @@ func parseTrojan(link string) (*ProxyNode, error) {
 	if len(matches) < 5 {
 		return nil, fmt.Errorf("invalid trojan link")
 	}
-
 	node.Config["password"] = matches[1]
 	node.Address = matches[2]
 	node.Port, _ = strconv.Atoi(matches[3])
 	params := parseQueryParams(matches[4])
 
+	// Извлекаем SNI
 	node.Config["sni"] = params.Get("sni")
 	node.Config["type"] = params.Get("type")
 	node.Config["security"] = params.Get("security")
 	node.Name = params.Get("fragment")
-
 	if node.Name == "" {
 		node.Name, _ = url.QueryUnescape(strings.Split(link, "#")[1])
 	}
-
 	return node, nil
 }
 
 func parseShadowsocks(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "shadowsocks", Config: make(map[string]interface{})}
-	_ = node
 
 	link = strings.TrimPrefix(link, "ss://")
 	parts := strings.Split(link, "#")
-	
 	if len(parts) > 1 {
 		node.Name, _ = url.QueryUnescape(parts[1])
 	}
-
 	decoded, err := base64.RawURLEncoding.DecodeString(strings.Split(parts[0], "@")[0])
 	if err != nil {
 		decoded, _ = base64.StdEncoding.DecodeString(strings.Split(parts[0], "@")[0])
 	}
-
 	methodPass := strings.SplitN(string(decoded), ":", 2)
 	if len(methodPass) == 2 {
 		node.Config["method"] = methodPass[0]
 		node.Config["password"] = methodPass[1]
 	}
-
 	serverPart := strings.Split(parts[0], "@")[1]
 	serverPort := strings.Split(serverPart, ":")
 	node.Address = serverPort[0]
 	node.Port, _ = strconv.Atoi(serverPort[1])
-
 	return node, nil
 }
 
 func parseHysteria2(link string) (*ProxyNode, error) {
-	node := &ProxyNode{RawLink: link, Protocol: "hysteria2", Config: make(map[string]interface{})}
-	node.Name = "Hysteria2 Node"
+	node := &ProxyNode{RawLink: link, Protocol: "hysteria2", Config: make(map[string]interface{})}	node.Name = "Hysteria2 Node"
 	return node, nil
 }
 
 func parseTUIC(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "tuic", Config: make(map[string]interface{})}
-	_ = node
 	node.Name = "TUIC Node"
 	return node, nil
 }
@@ -295,19 +307,20 @@ func parseQueryParams(query string) url.Values {
 	return values
 }
 
-func processNodes(nodes []*ProxyNode) []CheckResult {
+func processNodes(nodes []*ProxyNode, sniWhitelist []string) []CheckResult {
 	var wg sync.WaitGroup
 	nodeChan := make(chan *ProxyNode, len(nodes))
 	resultChan := make(chan CheckResult, len(nodes))
 
 	for i := 0; i < WorkerCount; i++ {
 		wg.Add(1)
-		go worker(&wg, nodeChan, resultChan)
+		go worker(&wg, nodeChan, resultChan, sniWhitelist) // Передаём список SNI в воркер
 	}
 
 	for _, node := range nodes {
 		nodeChan <- node
 	}
+
 	close(nodeChan)
 
 	go func() {
@@ -326,20 +339,17 @@ func processNodes(nodes []*ProxyNode) []CheckResult {
 			results = append(results, result)
 		}
 	}
-
 	return results
 }
-
-func worker(wg *sync.WaitGroup, nodeChan <-chan *ProxyNode, resultChan chan<- CheckResult) {
+func worker(wg *sync.WaitGroup, nodeChan <-chan *ProxyNode, resultChan chan<- CheckResult, sniWhitelist []string) {
 	defer wg.Done()
-
 	for node := range nodeChan {
-		result := checkNode(node)
+		result := checkNode(node, sniWhitelist) // Передаём список SNI в checkNode
 		resultChan <- result
 	}
 }
 
-func checkNode(node *ProxyNode) CheckResult {
+func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 	result := CheckResult{Node: node, Success: false}
 
 	port := int(atomic.AddInt32(&portCounter, 1))
@@ -361,7 +371,6 @@ func checkNode(node *ProxyNode) CheckResult {
 	cmd := exec.CommandContext(ctx, "./xray", "run", "-c", configPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-
 	if err := cmd.Start(); err != nil {
 		return result
 	}
@@ -377,15 +386,13 @@ func checkNode(node *ProxyNode) CheckResult {
 	}
 
 	speed := measureSpeed(port)
-	if speed < 1.0 {
+	if speed < 1.0 { // Порог 1.0 Мбит/с
 		return result
 	}
 
-	countryID := getCountryCode(node.Address)
-	result.Speed = speed
+	countryID := getCountryCode(node.Address)	result.Speed = speed
 	result.CountryID = countryID
 	result.Success = true
-
 	return result
 }
 
@@ -406,7 +413,6 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 	}
 
 	var outbound map[string]interface{}
-
 	switch node.Protocol {
 	case "vless":
 		outbound = map[string]interface{}{
@@ -428,14 +434,12 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 			},
 			"streamSettings": buildStreamSettings(node),
 		}
-
 	case "trojan":
 		outbound = map[string]interface{}{
 			"protocol": "trojan",
 			"settings": map[string]interface{}{
 				"servers": []map[string]interface{}{
-					{
-						"address":  node.Address,
+					{						"address":  node.Address,
 						"port":     node.Port,
 						"password": node.Config["password"],
 					},
@@ -443,7 +447,6 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 			},
 			"streamSettings": buildStreamSettings(node),
 		}
-
 	case "shadowsocks":
 		outbound = map[string]interface{}{
 			"protocol": "shadowsocks",
@@ -458,7 +461,6 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 				},
 			},
 		}
-
 	default:
 		return fmt.Errorf("unsupported protocol: %s", node.Protocol)
 	}
@@ -469,7 +471,6 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 	if err != nil {
 		return err
 	}
-
 	return os.WriteFile(filename, data, 0644)
 }
 
@@ -482,19 +483,17 @@ func buildStreamSettings(node *ProxyNode) map[string]interface{} {
 	if security == "tls" {
 		streamSettings["security"] = "tls"
 		streamSettings["tlsSettings"] = map[string]interface{}{
-			"serverName": node.Config["sni"],
-			"fingerprint": getConfigValue(node.Config, "fp", "chrome"),
+			"serverName":  node.Config["sni"],
+			"fingerprint": "randomized", // Добавляем fingerprint для маскировки
 		}
 	} else if security == "reality" {
 		streamSettings["security"] = "reality"
-		streamSettings["realitySettings"] = map[string]interface{}{
-			"serverName": node.Config["sni"],
-			"publicKey":  node.Config["pbk"],
-			"shortId":    node.Config["sid"],
-			"fingerprint": getConfigValue(node.Config, "fp", "chrome"),
+		streamSettings["realitySettings"] = map[string]interface{}{			"serverName":  node.Config["sni"],
+			"publicKey":   node.Config["pbk"],
+			"shortId":     node.Config["sid"],
+			"fingerprint": "randomized", // Добавляем fingerprint для маскировки
 		}
 	}
-
 	return streamSettings
 }
 
@@ -507,8 +506,21 @@ func getConfigValue(config map[string]interface{}, key, defaultVal string) strin
 	return defaultVal
 }
 
+// isTargetSNI проверяет, заканчивается ли SNI ноды на одну из строк из белого списка.
+func isTargetSNI(nodeSNI string, whitelist []string) bool {
+	if nodeSNI == "" {
+		return false
+	}
+	for _, suffix := range whitelist {
+		if strings.HasSuffix(nodeSNI, "."+suffix) || nodeSNI == suffix {
+			return true
+		}
+	}
+	return false
+}
+
 func checkConnectivity(port int) bool {
-	dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", port), nil, proxy.Direct)
+	dialer, err := goproxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", port), nil, goproxy.Direct)
 	if err != nil {
 		return false
 	}
@@ -521,20 +533,19 @@ func checkConnectivity(port int) bool {
 			MaxIdleConns:        1,
 			MaxIdleConnsPerHost: 1,
 		},
+		// Используем глобальный таймаут
 		Timeout: TimeoutCheck,
 	}
 
-	resp, err := client.Get(TestURL)
-	if err != nil {
+	resp, err := client.Get(TestURL)	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-
 	return resp.StatusCode == 204
 }
 
 func measureSpeed(port int) float64 {
-	dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", port), nil, proxy.Direct)
+	dialer, err := goproxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", port), nil, goproxy.Direct)
 	if err != nil {
 		return 0
 	}
@@ -547,6 +558,7 @@ func measureSpeed(port int) float64 {
 			MaxIdleConns:        1,
 			MaxIdleConnsPerHost: 1,
 		},
+		// Используем глобальный таймаут
 		Timeout: TimeoutSpeed,
 	}
 
@@ -559,7 +571,6 @@ func measureSpeed(port int) float64 {
 
 	buf := make([]byte, 32768)
 	downloaded := int64(0)
-
 	for downloaded < SpeedTestSize {
 		n, err := resp.Body.Read(buf)
 		downloaded += int64(n)
@@ -575,9 +586,7 @@ func measureSpeed(port int) float64 {
 	if duration == 0 {
 		return 0
 	}
-
-	mbps := (float64(downloaded) * 8) / (duration * 1024 * 1024)
-	return mbps
+	mbps := (float64(downloaded) * 8) / (duration * 1024 * 1024)	return mbps
 }
 
 func getCountryCode(address string) string {
@@ -595,7 +604,6 @@ func getCountryCode(address string) string {
 	if err != nil {
 		return "UN"
 	}
-
 	return record.Country.IsoCode
 }
 
@@ -603,6 +611,7 @@ func saveResults(results []CheckResult) {
 	ufFile, _ := os.Create("uf.txt")
 	fastFile, _ := os.Create("fast.txt")
 	normFile, _ := os.Create("norm.txt")
+
 	defer ufFile.Close()
 	defer fastFile.Close()
 	defer normFile.Close()
@@ -612,13 +621,11 @@ func saveResults(results []CheckResult) {
 		if flag == "" {
 			flag = "🌐"
 		}
-
 		name := result.Node.Name
 		name = strings.ReplaceAll(name, "🌐 UN", fmt.Sprintf("%s %s", flag, result.CountryID))
-		
+
 		var speedTag string
 		var file *os.File
-
 		if result.Speed >= UltraFastSpeed {
 			speedTag = " | YT | UF"
 			file = ufFile
@@ -629,7 +636,6 @@ func saveResults(results []CheckResult) {
 			speedTag = " | YT | NORM"
 			file = normFile
 		}
-
 		link := strings.Split(result.Node.RawLink, "#")[0]
 		newLink := fmt.Sprintf("%s#%s%s\n", link, url.QueryEscape(name), speedTag)
 		file.WriteString(newLink)
@@ -647,12 +653,10 @@ func countLinesInFile(filename string) int {
 		return 0
 	}
 	defer file.Close()
-
 	count := 0
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		count++
 	}
 	return count
-}
- 
+} 
