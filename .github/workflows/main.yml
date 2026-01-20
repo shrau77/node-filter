@@ -1,7 +1,7 @@
 name: L7 Smart Checker (Matrix)
 on:
   schedule:
-    - cron: '17 */4 * * *' # Запуск каждые 3 часа
+    - cron: '17 */4 * * *' # Запуск каждые 4 часа
   workflow_dispatch: # Позволяет запустить workflow вручную через кнопку в интерфейсе GitHub
 
 # Требуется permissions для пуша в репозиторий
@@ -39,20 +39,24 @@ jobs:
           TOTAL_LINES=$(wc -l < combined_input_full.txt)
           echo "Total lines in combined input: $TOTAL_LINES"
 
-          # Определяем размер блока (например, 1000 строк на job)
-          # Уменьшим размер, если вдруг возникнут проблемы с памятью/временем
+          # Определяем размер блока (например, 500 строк на job)
           CHUNK_SIZE=500
           echo "Chunk size: $CHUNK_SIZE"
 
           # Создаем директорию для частей
           mkdir -p input_chunks
 
-          # Разбиваем файл          split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
+          # Разбиваем файл
+          split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
 
           # Подсчитываем количество получившихся файлов (job'ов)
           NUM_JOBS=$(ls input_chunks/chunk_* | wc -l)
           echo "Number of jobs (chunks): $NUM_JOBS"
           echo "num_jobs=$NUM_JOBS" >> $GITHUB_OUTPUT
+          
+          # Показываем что создалось
+          echo "Created chunks:"
+          ls -la input_chunks/
 
       - name: Set Matrix JSON Output
         id: set-matrix
@@ -84,19 +88,20 @@ jobs:
           echo "matrix_json=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
       # Загружаем директорию с чанками как артефакт
-      # Этот шаг ДОЛЖЕН быть ПОСЛЕ создания директории input_chunks в шаге 'Combine and Split Lists'
       - name: Upload Input Chunks
         uses: actions/upload-artifact@v4
         with:
           name: input-chunks
           path: input_chunks/
-          retention-days: 1 # Хранить коротко, т.к. используется сразу
+          retention-days: 1
+          if-no-files-found: error # Показывать ошибку если файлы не найдены
 
 
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
-    strategy:      matrix:
+    strategy:
+      matrix:
         # Используем результат из prepare-inputs и преобразуем его в объект
         include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
@@ -122,7 +127,7 @@ jobs:
       # Скачиваем whitelist.txt (если он хранится отдельно в репе hpp или чекера)
       - name: Fetch Whitelist
         run: |
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o whitelist.txt || echo "whitelist.txt not found, creating empty one." && touch whitelist.txt
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o whitelist.txt || (echo "whitelist.txt not found, creating empty one." && touch whitelist.txt)
 
       # Копируем нужный чанк из директории, созданной в prepare-inputs (теперь скачанной)
       - name: Copy Input Chunk
@@ -132,6 +137,7 @@ jobs:
           ls -la input_chunks/ # Показать содержимое директории для дебага
           cp "input_chunks/${{ matrix.input_file }}" input.txt
           echo "Processing chunk: ${{ matrix.input_file }}"
+          wc -l input.txt # Показать количество строк
           head -n 5 input.txt # Показать начало файла для дебага
 
       - name: Prepare and Run Go Checker
@@ -145,7 +151,8 @@ jobs:
           go build -o checker main.go
           ./checker -input input.txt -whitelist whitelist.txt
 
-      # Результаты сохраняются как uf.txt, fast.txt, norm.txt в каждом job'е      # Эти файлы нужно как-то собрать в одном месте после завершения всех job'ов.
+      # Результаты сохраняются как uf.txt, fast.txt, norm.txt в каждом job'е
+      # Эти файлы нужно как-то собрать в одном месте после завершения всех job'ов.
       # Мы их сохраняем как артефакты.
       - name: Upload Results
         uses: actions/upload-artifact@v4
@@ -155,7 +162,8 @@ jobs:
             uf.txt
             fast.txt
             norm.txt
-          retention-days: 1 # Хранить коротко, т.к. они будут собраны
+          retention-days: 1
+          if-no-files-found: warn # Предупреждение если файлы не найдены
 
 
   combine-results:
@@ -194,6 +202,7 @@ jobs:
               fi
             fi
           done
+
           # Переименовываем для дальнейшего использования
           mv combined_uf.txt uf.txt
           mv combined_fast.txt fast.txt
@@ -218,7 +227,7 @@ jobs:
           cp ../norm.txt .
 
           git add uf.txt fast.txt norm.txt
-          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойет дальше
+          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойдет дальше
           git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M')" || exit 0
           git push
 
