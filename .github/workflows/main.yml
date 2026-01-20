@@ -2,7 +2,7 @@ name: L7 Smart Checker (Matrix)
 on:
   schedule:
     - cron: '17 */4 * * *' # Запуск каждые 3 часа
-  workflow_dispatch: # Чтобы ты мог запустить проверку вручную кнопкой
+  workflow_dispatch: # Позволяет запустить workflow вручную через кнопку в интерфейсе GitHub
 
 # Требуется permissions для пуша в репозиторий
 permissions:
