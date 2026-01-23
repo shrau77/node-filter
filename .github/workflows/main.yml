@@ -26,8 +26,8 @@ jobs:
       - name: Fetch All Node Lists
         run: |
           # Скачиваем файлы из твоей основной репы
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/ultra_elite.txt" -o ultra_elite_raw.txt
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/business.txt" -o business_raw.txt
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/ultra_elite.txt" -o ultra_elite_raw.txt
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/business.txt" -o business_raw.txt
 
       - name: Combine and Split Lists
         id: split
