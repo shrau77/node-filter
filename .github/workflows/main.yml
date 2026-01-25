@@ -28,19 +28,20 @@ jobs:
           # Скачиваем файлы из твоей основной репы
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/ultra_elite.txt" -o ultra_elite_raw.txt
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/business.txt" -o business_raw.txt
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/med.txt" -o med_raw.txt
 
       - name: Combine and Split Lists
         id: split
         run: |
           # Объединяем файлы
-          cat ultra_elite_raw.txt business_raw.txt > combined_input_full.txt
+          cat ultra_elite_raw.txt business_raw.txt med_raw.txt > combined_input_full.txt
 
           # Узнаем общее количество строк
           TOTAL_LINES=$(wc -l < combined_input_full.txt)
           echo "Total lines in combined input: $TOTAL_LINES"
 
           # Определяем размер блока (например, 500 строк на job)
-          CHUNK_SIZE=500
+          CHUNK_SIZE=1000
           echo "Chunk size: $CHUNK_SIZE"
 
           # Создаем директорию для частей
