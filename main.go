@@ -142,13 +142,13 @@ func downloadFile(filepath string, url string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	
+
 	out, err := os.Create(filepath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	
+
 	_, err = io.Copy(out, resp.Body)
 	return err
 }
@@ -281,13 +281,13 @@ func parseShadowsocks(link string) (*ProxyNode, error) {
 	if len(parts) > 1 {
 		node.Name, _ = url.QueryUnescape(parts[1])
 	}
-	
+
 	mainPart := parts[0]
 	atParts := strings.Split(mainPart, "@")
 	if len(atParts) < 2 {
 		return nil, fmt.Errorf("invalid shadowsocks link")
 	}
-	
+
 	decoded, err := base64.RawURLEncoding.DecodeString(atParts[0])
 	if err != nil {
 		decoded, _ = base64.StdEncoding.DecodeString(atParts[0])
@@ -297,7 +297,7 @@ func parseShadowsocks(link string) (*ProxyNode, error) {
 		node.Config["method"] = methodPass[0]
 		node.Config["password"] = methodPass[1]
 	}
-	
+
 	serverPart := atParts[1]
 	serverPort := strings.Split(serverPart, ":")
 	if len(serverPort) < 2 {
@@ -370,6 +370,17 @@ func worker(wg *sync.WaitGroup, nodeChan <-chan *ProxyNode, resultChan chan<- Ch
 
 func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 	result := CheckResult{Node: node, Success: false}
+
+	// --- ЛОГИКА ФИЛЬТРАЦИИ SNI ---
+	// Если список SNI не пуст, проверяем соответствие
+	if len(sniWhitelist) > 0 {
+		nodeSNI := getConfigValue(node.Config, "sni", "")
+		// Если SNI не подходит под маску или пустой, пропускаем узел
+		if !isTargetSNI(nodeSNI, sniWhitelist) {
+			return result
+		}
+	}
+	// -----------------------------
 
 	port := int(atomic.AddInt32(&portCounter, 1))
 	if port > MaxPortRange {
