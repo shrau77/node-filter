@@ -28,13 +28,12 @@ jobs:
           # Скачиваем файлы из твоей основной репы
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/ultra_elite.txt" -o ultra_elite_raw.txt
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/business.txt" -o business_raw.txt
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/med.txt" -o med_raw.txt
 
       - name: Combine and Split Lists
         id: split
         run: |
           # Объединяем файлы
-          cat ultra_elite_raw.txt business_raw.txt med_raw.txt > combined_input_full.txt
+          cat ultra_elite_raw.txt business_raw.txt > combined_input_full.txt
 
           # Узнаем общее количество строк
           TOTAL_LINES=$(wc -l < combined_input_full.txt)
