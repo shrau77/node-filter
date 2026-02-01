@@ -33,11 +33,11 @@ const (
 	GeoIPURL          = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
 	TestURL           = "https://www.youtube.com/generate_204"
 	SpeedTestURL      = "https://speed.cloudflare.com/__down?bytes=2097152" 
-	SpeedTestSize     = 2 * 1024 * 1024 // 2MB
+	SpeedTestSize     = 1 * 1024 * 1024 // 2MB
 	TimeoutCheck      = 15 * time.Second
 	TimeoutSpeed      = 20 * time.Second
-	UltraFastSpeed    = 6.0 // Mbps
-	FastSpeed         = 3.0 // Mbps
+	UltraFastSpeed    = 3.5 // Mbps
+	FastSpeed         = 2.5 // Mbps
 )
 
 var (
