@@ -34,8 +34,8 @@ const (
 	TestURL           = "https://www.youtube.com/generate_204"
 	SpeedTestURL      = "https://speed.cloudflare.com/__down?bytes=2097152" 
 	SpeedTestSize     = 1 * 1024 * 1024 // 2MB
-	TimeoutCheck      = 15 * time.Second
-	TimeoutSpeed      = 20 * time.Second
+	TimeoutCheck      = 60 * time.Second
+	TimeoutSpeed      = 90 * time.Second
 	UltraFastSpeed    = 3.5 // Mbps
 	FastSpeed         = 2.5 // Mbps
 )
