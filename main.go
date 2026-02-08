@@ -29,13 +29,14 @@ const (
 	WorkerCount       = 120
 	MinPortRange      = 20000
 	MaxPortRange      = 35000
+	// Используем официальное ядро Xray, так как только оно корректно поддерживает Vision и uTLS (fingerprint)
 	XrayURL           = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
 	GeoIPURL          = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
 	TestURL           = "https://www.youtube.com/generate_204"
-	SpeedTestURL      = "https://speed.cloudflare.com/__down?bytes=2097152" 
+	SpeedTestURL      = "https://speed.cloudflare.com/__down?bytes=2097152"
 	SpeedTestSize     = 1 * 1024 * 1024 // 2MB
-	TimeoutCheck      = 60 * time.Second
-	TimeoutSpeed      = 90 * time.Second
+	TimeoutCheck      = 15 * time.Second
+	TimeoutSpeed      = 20 * time.Second
 	UltraFastSpeed    = 3.5 // Mbps
 	FastSpeed         = 2.5 // Mbps
 )
@@ -76,7 +77,7 @@ var geoIPReader *geoip2.Reader
 var portCounter int32 = MinPortRange
 
 func main() {
-	fmt.Println("🚀 Starting L7 Proxy Checker")
+	fmt.Println("🚀 Starting L7 Proxy Checker (Xray Vision/uTLS Edition)")
 
 	inputFile := flag.String("input", "proxies.txt", "Path to the input proxy list file")
 	whitelistFile := flag.String("whitelist", "whitelist.txt", "Path to the SNI whitelist file")
@@ -117,7 +118,7 @@ func main() {
 
 func setupDependencies() error {
 	if _, err := os.Stat("xray"); os.IsNotExist(err) {
-		fmt.Println("📥 Downloading Xray...")
+		fmt.Println("📥 Downloading Xray Core (XTLS/Vision supported)...")
 		if err := downloadFile("xray.zip", XrayURL); err != nil {
 			return err
 		}
@@ -231,7 +232,7 @@ func parseVLESS(link string) (*ProxyNode, error) {
 	node.Config["uuid"] = uuid
 	node.Config["security"] = params.Get("security")
 	node.Config["encryption"] = params.Get("encryption")
-	node.Config["flow"] = params.Get("flow")
+	node.Config["flow"] = params.Get("flow") // Важно для Vision
 	node.Config["type"] = params.Get("type")
 	node.Config["sni"] = params.Get("sni")
 	node.Config["fp"] = params.Get("fp")
@@ -372,10 +373,8 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 	result := CheckResult{Node: node, Success: false}
 
 	// --- ЛОГИКА ФИЛЬТРАЦИИ SNI ---
-	// Если список SNI не пуст, проверяем соответствие
 	if len(sniWhitelist) > 0 {
 		nodeSNI := getConfigValue(node.Config, "sni", "")
-		// Если SNI не подходит под маску или пустой, пропускаем узел
 		if !isTargetSNI(nodeSNI, sniWhitelist) {
 			return result
 		}
@@ -457,7 +456,7 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 							{
 								"id":         node.Config["uuid"],
 								"encryption": getConfigValue(node.Config, "encryption", "none"),
-								"flow":       node.Config["flow"],
+								"flow":       node.Config["flow"], // Vision flow передается здесь
 							},
 						},
 					},
@@ -512,11 +511,20 @@ func buildStreamSettings(node *ProxyNode) map[string]interface{} {
 	}
 
 	security := getConfigValue(node.Config, "security", "none")
+	flow := getConfigValue(node.Config, "flow", "")
+
+	// Если обнаружен Vision Flow, принудительно включаем TLS, если он не указан
+	if flow == "xtls-rprx-vision" && security == "none" {
+		security = "tls"
+	}
+
 	if security == "tls" {
 		streamSettings["security"] = "tls"
 		streamSettings["tlsSettings"] = map[string]interface{}{
-			"serverName":  node.Config["sni"],
-			"fingerprint": "randomized",
+			"serverName":    node.Config["sni"],
+			"fingerprint":   "chrome", // uTLS: Эмуляция Chrome для JA3
+			"alpn":          []string{"h2", "http/1.1"}, // Критично для Vision
+			"allowInsecure": true,
 		}
 	} else if security == "reality" {
 		streamSettings["security"] = "reality"
@@ -524,7 +532,8 @@ func buildStreamSettings(node *ProxyNode) map[string]interface{} {
 			"serverName":  node.Config["sni"],
 			"publicKey":   node.Config["pbk"],
 			"shortId":     node.Config["sid"],
-			"fingerprint": "randomized",
+			"fingerprint": "chrome", // uTLS: Эмуляция Chrome для Reality
+			"spiderX":     "/",
 		}
 	}
 	return streamSettings
