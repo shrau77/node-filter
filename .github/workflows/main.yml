@@ -2,9 +2,8 @@ name: L7 Smart Checker (Matrix)
 on:
   schedule:
     - cron: '17 */4 * * *' # Запуск каждые 4 часа
-  workflow_dispatch: # Позволяет запустить workflow вручную через кнопку в интерфейсе GitHub
+  workflow_dispatch: # Позволяет запустить workflow вручную
 
-# Требуется permissions для пуша в репозиторий
 permissions:
   contents: write
 
@@ -12,7 +11,6 @@ jobs:
   prepare-inputs:
     runs-on: ubuntu-latest
     outputs:
-      # Используем строку, которую затем преобразуем в JSON в следующем job'e
       matrix_json: ${{ steps.set-matrix.outputs.matrix_json }}
     steps:
       - name: Checkout Checker Code
@@ -25,84 +23,49 @@ jobs:
 
       - name: Fetch All Node Lists
         run: |
-          # Скачиваем файлы из твоей основной репы
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/ultra_elite.txt" -o ultra_elite_raw.txt
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/business.txt" -o business_raw.txt
 
       - name: Combine and Split Lists
-        id: split
         run: |
           # Объединяем файлы
           cat ultra_elite_raw.txt business_raw.txt > combined_input_full.txt
+          
+          # Убираем пустые строки на всякий случай
+          sed -i '/^$/d' combined_input_full.txt
 
-          # Узнаем общее количество строк
-          TOTAL_LINES=$(wc -l < combined_input_full.txt)
-          echo "Total lines in combined input: $TOTAL_LINES"
-
-          # Определяем размер блока (например, 500 строк на job)
+          # Определяем размер блока (600 строк на воркер)
           CHUNK_SIZE=600
-          echo "Chunk size: $CHUNK_SIZE"
-
-          # Создаем директорию для частей
           mkdir -p input_chunks
-
-          # Разбиваем файл
           split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
 
-          # Подсчитываем количество получившихся файлов (job'ов)
-          NUM_JOBS=$(ls input_chunks/chunk_* | wc -l)
-          echo "Number of jobs (chunks): $NUM_JOBS"
-          echo "num_jobs=$NUM_JOBS" >> $GITHUB_OUTPUT
-          
-          # Показываем что создалось
           echo "Created chunks:"
           ls -la input_chunks/
 
-      - name: Set Matrix JSON Output
+      - name: Generate Matrix JSON
         id: set-matrix
         run: |
-          # Инициализируем JSON массив
-          MATRIX_JSON="["
-          FIRST_ENTRY=true
-          # Проходим по всем файлам чанков
-          for FILENAME in input_chunks/chunk_*; do
-            # Получаем имя файла без пути
-            BASENAME=$(basename "$FILENAME")
-            # Экранируем кавычки и другие символы в имени файла для JSON
-            ESCAPED_NAME=$(printf '%s\n' "$BASENAME" | sed 's/"/\\"/g')
-            
-            # Если это не первый элемент, добавляем запятую
-            if [ "$FIRST_ENTRY" = false ]; then
-              MATRIX_JSON="$MATRIX_JSON,"
-            else
-              FIRST_ENTRY=false
-            fi
-            
-            # Добавляем объект с ключом input_file в JSON
-            MATRIX_JSON="$MATRIX_JSON{\"input_file\":\"$ESCAPED_NAME\"}"
-          done
-          MATRIX_JSON="$MATRIX_JSON]"
-          
-          # Выводим сгенерированный JSON в output
-          echo "Generated matrix JSON: $MATRIX_JSON"
-          echo "matrix_json=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          # Используем Python для генерации валидного JSON, так как bash часто ошибается с запятыми
+          python3 -c '
+          import os, json
+          files = sorted([f for f in os.listdir("input_chunks") if f.startswith("chunk_")])
+          matrix = [{"input_file": f} for f in files]
+          print(f"matrix_json={json.dumps(matrix)}")
+          ' >> $GITHUB_OUTPUT
 
-      # Загружаем директорию с чанками как артефакт
       - name: Upload Input Chunks
         uses: actions/upload-artifact@v4
         with:
           name: input-chunks
           path: input_chunks/
           retention-days: 1
-          if-no-files-found: error # Показывать ошибку если файлы не найдены
-
 
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false # Если один чанк упадет, остальные продолжат работу
       matrix:
-        # Используем результат из prepare-inputs и преобразуем его в объект
         include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
       - name: Checkout Checker Code
@@ -112,135 +75,103 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: input-chunks
-          path: input_chunks # Скачиваем в ту же директорию
+          path: input_chunks
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
 
-      - name: Setup Warp (если нужен для обхода)
+      - name: Setup Warp
         uses: fscarmen/warp-on-actions@v1.1
         with:
           stack: dual
 
-      # Скачиваем whitelist.txt (если он хранится отдельно в репе hpp или чекера)
       - name: Fetch Whitelist
         run: |
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o whitelist.txt || (echo "whitelist.txt not found, creating empty one." && touch whitelist.txt)
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o whitelist.txt || touch whitelist.txt
 
-      # Копируем нужный чанк из директории, созданной в prepare-inputs (теперь скачанной)
-      - name: Copy Input Chunk
+      - name: Prepare Input File
         run: |
-          # Используем имя файла из матрицы
-          echo "Looking for chunk: input_chunks/${{ matrix.input_file }}"
-          ls -la input_chunks/ # Показать содержимое директории для дебага
           cp "input_chunks/${{ matrix.input_file }}" input.txt
-          echo "Processing chunk: ${{ matrix.input_file }}"
-          wc -l input.txt # Показать количество строк
-          head -n 5 input.txt # Показать начало файла для дебага
+          echo "Processing ${{ matrix.input_file }} with $(wc -l < input.txt) lines"
 
-      - name: Prepare and Run Go Checker
+      - name: Build and Run Checker
         run: |
-          # Инициализация и зависимости (если Go код их требует)
-          go mod init proxy-checker || true
+          # Инициализация модуля и загрузка зависимостей
+          go mod init checker || true
           go get github.com/oschwald/geoip2-golang
           go get golang.org/x/net/proxy
-
-          # Сборка и запуск с указанием конкретного input файла и whitelist файла
+          go mod tidy
+          
+          # Сборка
           go build -o checker main.go
+          chmod +x checker
+          
+          # Запуск (Xray и GeoIP скачаются самим чекером автоматически)
           ./checker -input input.txt -whitelist whitelist.txt
 
-      # Результаты сохраняются как uf.txt, fast.txt, norm.txt в каждом job'е
-      # Эти файлы нужно как-то собрать в одном месте после завершения всех job'ов.
-      # Мы их сохраняем как артефакты.
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ matrix.input_file }} # Уникальное имя артефакта для каждого job'а
+          name: results-${{ matrix.input_file }}
           path: |
             uf.txt
             fast.txt
             norm.txt
           retention-days: 1
-          if-no-files-found: warn # Предупреждение если файлы не найдены
-
+          if-no-files-found: ignore
 
   combine-results:
-    needs: [prepare-inputs, check-chunks] # Зависит от обоих предыдущих job'ов
+    needs: [prepare-inputs, check-chunks]
     runs-on: ubuntu-latest
+    if: always() # Запускать даже если какие-то чанки упали
     steps:
-      - name: Checkout Checker Code (for scripts if needed)
-        uses: actions/checkout@v4
-
-      - name: Download All Result Artifacts
+      - name: Download All Results
         uses: actions/download-artifact@v4
         with:
+          pattern: results-*
           path: all_results
-          pattern: results-* # Загружаем все артефакты, начинающиеся с results-
+          merge-multiple: false
 
-      - name: Combine Result Files
+      - name: Combine Files
         run: |
-          # Создаем пустые итоговые файлы
-          touch combined_uf.txt combined_fast.txt combined_norm.txt
+          touch uf.txt fast.txt norm.txt
+          
+          # Проходим по всем папкам результатов
+          find all_results -name "uf.txt" -exec cat {} + >> uf.txt
+          find all_results -name "fast.txt" -exec cat {} + >> fast.txt
+          find all_results -name "norm.txt" -exec cat {} + >> norm.txt
+          
+          echo "Combined stats:"
+          wc -l uf.txt fast.txt norm.txt
 
-          # Проходим по всем загруженным артефактам и объединяем файлы
-          for dir in all_results/results-*/; do
-            if [ -d "$dir" ]; then
-              echo "Processing artifact directory: $dir"
-              if [ -f "$dir/uf.txt" ]; then
-                cat "$dir/uf.txt" >> combined_uf.txt
-                echo "Appended uf.txt from $dir"
-              fi
-              if [ -f "$dir/fast.txt" ]; then
-                cat "$dir/fast.txt" >> combined_fast.txt
-                echo "Appended fast.txt from $dir"
-              fi
-              if [ -f "$dir/norm.txt" ]; then
-                cat "$dir/norm.txt" >> combined_norm.txt
-                echo "Appended norm.txt from $dir"
-              fi
-            fi
-          done
-
-          # Переименовываем для дальнейшего использования
-          mv combined_uf.txt uf.txt
-          mv combined_fast.txt fast.txt
-          mv combined_norm.txt norm.txt
-
-          ls -lh *.txt # Показать итоговые файлы
-
-      - name: Push Combined Results to HPP
+      - name: Push to HPP Repo
         env:
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # Клонируем основную репу для записи результатов
           git clone https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/shrau77/hpp.git target_repo
-
           cd target_repo
-          git config user.name "L7-Matrix-Checker-Bot"
+          git config user.name "L7-Matrix-Bot"
           git config user.email "bot@github.com"
 
-          # Копируем итоговые файлы в клон репо
           cp ../uf.txt .
           cp ../fast.txt .
           cp ../norm.txt .
 
           git add uf.txt fast.txt norm.txt
-          # Фиксируем изменения. Если файлов нет или они не изменились, скрипт просто пойдет дальше
-          git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M')" || exit 0
+          git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
           git push
 
-      - name: Send Summary to Telegram
+      - name: Send Telegram Notification
         if: success()
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Считаем количество строк в итоговых файлах (учитываем, что файлов может не быть)
-          UF=$([ -f uf.txt ] && grep -c "://" uf.txt || echo 0)
-          FAST=$([ -f fast.txt ] && grep -c "://" fast.txt || echo 0)
-          NORM=$([ -f norm.txt ] && grep -c "://" norm.txt || echo 0)
+          UF=$(grep -c "://" uf.txt || echo 0)
+          FAST=$(grep -c "://" fast.txt || echo 0)
+          NORM=$(grep -c "://" norm.txt || echo 0)
 
           MESSAGE="🚀 *L7 Matrix Check Results* 🚀%0A%0A💎 *Ultra Fast:* $UF%0A⚡ *Fast:* $FAST%0A✅ *Normal:* $NORM%0A%0A📦 _Results pushed to HPP_"
 
