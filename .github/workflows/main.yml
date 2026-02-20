@@ -85,7 +85,7 @@ jobs:
       - name: Setup Warp
         uses: fscarmen/warp-on-actions@v1.1
         with:
-          stack: dual
+          stack: ipv4
 
       - name: Fetch Whitelist
         run: |
