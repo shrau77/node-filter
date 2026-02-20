@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,20 +27,56 @@ import (
 )
 
 const (
-	WorkerCount       = 120
-	MinPortRange      = 20000
-	MaxPortRange      = 35000
-	// Используем официальное ядро Xray, так как только оно корректно поддерживает Vision и uTLS (fingerprint)
-	XrayURL           = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-	GeoIPURL          = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
-	TestURL           = "https://www.youtube.com/generate_204"
-	SpeedTestURL      = "https://speed.cloudflare.com/__down?bytes=2097152"
-	SpeedTestSize     = 1 * 1024 * 1024 // 2MB
-	TimeoutCheck      = 15 * time.Second
-	TimeoutSpeed      = 20 * time.Second
-	UltraFastSpeed    = 3.5 // Mbps
-	FastSpeed         = 2.5 // Mbps
+	WorkerCount    = 120
+	MinPortRange   = 20000
+	MaxPortRange   = 35000
+	XrayURL        = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+	GeoIPURL       = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
+	SpeedTestURL   = "https://speed.cloudflare.com/__down?bytes=2097152"
+	SpeedTestSize  = 1 * 1024 * 1024
+	TimeoutCheck   = 12 * time.Second
+	TimeoutSpeed   = 18 * time.Second
+	UltraFastSpeed = 3.5
+	FastSpeed      = 2.5
 )
+
+// === ТЕСТОВЫЕ URL ДЛЯ РОТАЦИИ ===
+var testURLs = []string{
+	"https://www.youtube.com/generate_204",
+	"https://play.google.com/log?format=json&hasfast=true",
+	"https://www.google.com/generate_204",
+	"https://clients4.google.com/generate_204",
+	"https://www.gstatic.com/generate_204",
+}
+
+// === FINGERPRINTS ДЛЯ РАНДОМИЗАЦИИ ===
+var fingerprints = []string{
+	"chrome",
+	"firefox", 
+	"safari",
+	"edge",
+	"ios",
+	"android",
+	"random",
+	"randomized",
+}
+
+// === ПУТИ ДЛЯ SPIDERX (РЕАЛИСТИЧНЫЕ) ===
+var spiderXPaths = []string{
+	"/",
+	"/index.html",
+	"/home",
+	"/api/v1",
+	"/static/main.js",
+	"/assets/bundle.css",
+	"/images/logo.png",
+	"/fonts/roboto.woff2",
+	"/manifest.json",
+	"/sw.js",
+	"/favicon.ico",
+	"/robots.txt",
+	"/sitemap.xml",
+}
 
 var (
 	countryFlags = map[string]string{
@@ -49,6 +86,16 @@ var (
 		"BR": "🇧🇷", "TR": "🇹🇷", "SE": "🇸🇪", "PL": "🇵🇱", "IT": "🇮🇹",
 		"ES": "🇪🇸", "CH": "🇨🇭", "FI": "🇫🇮", "NO": "🇳🇴", "DK": "🇩🇰",
 	}
+
+	// Счётчики
+	statsTotalInput    int32
+	statsParseFailed   int32
+	statsNoSNI         int32
+	statsSNIRejected   int32
+	statsConfigFailed  int32
+	statsConnectFailed int32
+	statsSpeedFailed   int32
+	statsSuccess       int32
 )
 
 type ProxyNode struct {
@@ -62,7 +109,7 @@ type ProxyNode struct {
 
 type CheckResult struct {
 	Node      *ProxyNode
-	Speed     float64 // Mbps
+	Speed     float64
 	CountryID string
 	Success   bool
 }
@@ -76,8 +123,34 @@ type XrayConfig struct {
 var geoIPReader *geoip2.Reader
 var portCounter int32 = MinPortRange
 
+// === РАНДОМИЗАЦИЯ ===
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+func randomFingerprint() string {
+	return fingerprints[rand.Intn(len(fingerprints))]
+}
+
+func randomSpiderX() string {
+	return spiderXPaths[rand.Intn(len(spiderXPaths))]
+}
+
+func randomTestURL() string {
+	return testURLs[rand.Intn(len(testURLs))]
+}
+
+func randomDelay(minMs, maxMs int) time.Duration {
+	delay := minMs + rand.Intn(maxMs-minMs)
+	return time.Duration(delay) * time.Millisecond
+}
+
+// === ОСНОВНОЙ КОД ===
+
 func main() {
-	fmt.Println("🚀 Starting L7 Proxy Checker (Xray Vision/uTLS Edition)")
+	fmt.Println("🚀 Starting L7 Proxy Checker (Stealth Edition)")
+	fmt.Println("==============================================")
 
 	inputFile := flag.String("input", "proxies.txt", "Path to the input proxy list file")
 	whitelistFile := flag.String("whitelist", "whitelist.txt", "Path to the SNI whitelist file")
@@ -96,12 +169,25 @@ func main() {
 	}
 	defer geoIPReader.Close()
 
-	// Чтение белого списка SNI
 	sniWhitelist, err := readSNIWhitelist(*whitelistFile)
 	if err != nil {
-		fmt.Printf("⚠️ Could not read SNI whitelist (%s), continuing without SNI checks: %v\n", *whitelistFile, err)
+		fmt.Printf("⚠️ Could not read SNI whitelist, continuing without SNI checks: %v\n", err)
 		sniWhitelist = []string{}
+	} else {
+		fmt.Printf("📋 Loaded %d SNI domains in whitelist\n", len(sniWhitelist))
 	}
+
+	// Подсчёт строк
+	file, _ := os.Open(*inputFile)
+	scanner := bufio.NewScanner(file)
+	lineCount := 0
+	for scanner.Scan() {
+		lineCount++
+	}
+	file.Close()
+
+	fmt.Printf("📄 Input file: %d lines\n", lineCount)
+	statsTotalInput = int32(lineCount)
 
 	nodes, err := readProxyList(*inputFile)
 	if err != nil {
@@ -109,16 +195,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("📋 Loaded %d nodes\n", len(nodes))
+	statsParseFailed = statsTotalInput - int32(len(nodes))
+	fmt.Printf("📋 Parsed successfully: %d nodes\n", len(nodes))
+	fmt.Printf("❌ Parse failures: %d\n", statsParseFailed)
 
 	results := processNodes(nodes, sniWhitelist)
 	saveResults(results)
-	fmt.Println("✅ Processing completed")
+
+	// Статистика
+	fmt.Println("\n==============================================")
+	fmt.Println("📊 FINAL STATISTICS:")
+	fmt.Printf("   📥 Input lines:     %d\n", statsTotalInput)
+	fmt.Printf("   ❌ Parse failed:    %d (%.1f%%)\n", statsParseFailed, float64(statsParseFailed)*100/float64(statsTotalInput))
+	fmt.Printf("   🚫 No SNI:          %d\n", statsNoSNI)
+	fmt.Printf("   🔒 SNI rejected:    %d\n", statsSNIRejected)
+	fmt.Printf("   ⚙️ Config failed:    %d\n", statsConfigFailed)
+	fmt.Printf("   🔌 Connect failed:  %d\n", statsConnectFailed)
+	fmt.Printf("   🐌 Speed too low:   %d\n", statsSpeedFailed)
+	fmt.Printf("   ✅ Success:         %d\n", statsSuccess)
+	fmt.Println("==============================================")
 }
 
 func setupDependencies() error {
 	if _, err := os.Stat("xray"); os.IsNotExist(err) {
-		fmt.Println("📥 Downloading Xray Core (XTLS/Vision supported)...")
+		fmt.Println("📥 Downloading Xray Core...")
 		if err := downloadFile("xray.zip", XrayURL); err != nil {
 			return err
 		}
@@ -207,19 +307,15 @@ func parseProxyLink(link string) (*ProxyNode, error) {
 		return parseTrojan(link)
 	} else if strings.HasPrefix(link, "ss://") {
 		return parseShadowsocks(link)
-	} else if strings.HasPrefix(link, "hysteria2://") || strings.HasPrefix(link, "hy2://") {
-		return parseHysteria2(link)
-	} else if strings.HasPrefix(link, "tuic://") {
-		return parseTUIC(link)
 	}
-
 	return nil, fmt.Errorf("unsupported protocol")
 }
 
 func parseVLESS(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "vless", Config: make(map[string]interface{})}
 
-	re := regexp.MustCompile(`vless://([^@]+)@([^:]+):(\d+)\?(.+)`)
+	// Исправленная регулярка с опциональным слешем
+	re := regexp.MustCompile(`vless://([^@]+)@([^:]+):(\d+)/?\?(.+)`)
 	matches := re.FindStringSubmatch(link)
 	if len(matches) < 5 {
 		return nil, fmt.Errorf("invalid vless link")
@@ -232,7 +328,7 @@ func parseVLESS(link string) (*ProxyNode, error) {
 	node.Config["uuid"] = uuid
 	node.Config["security"] = params.Get("security")
 	node.Config["encryption"] = params.Get("encryption")
-	node.Config["flow"] = params.Get("flow") // Важно для Vision
+	node.Config["flow"] = params.Get("flow")
 	node.Config["type"] = params.Get("type")
 	node.Config["sni"] = params.Get("sni")
 	node.Config["fp"] = params.Get("fp")
@@ -251,7 +347,7 @@ func parseVLESS(link string) (*ProxyNode, error) {
 func parseTrojan(link string) (*ProxyNode, error) {
 	node := &ProxyNode{RawLink: link, Protocol: "trojan", Config: make(map[string]interface{})}
 
-	re := regexp.MustCompile(`trojan://([^@]+)@([^:]+):(\d+)\?(.+)`)
+	re := regexp.MustCompile(`trojan://([^@]+)@([^:]+):(\d+)/?\?(.+)`)
 	matches := re.FindStringSubmatch(link)
 	if len(matches) < 5 {
 		return nil, fmt.Errorf("invalid trojan link")
@@ -309,18 +405,6 @@ func parseShadowsocks(link string) (*ProxyNode, error) {
 	return node, nil
 }
 
-func parseHysteria2(link string) (*ProxyNode, error) {
-	node := &ProxyNode{RawLink: link, Protocol: "hysteria2", Config: make(map[string]interface{})}
-	node.Name = "Hysteria2 Node"
-	return node, nil
-}
-
-func parseTUIC(link string) (*ProxyNode, error) {
-	node := &ProxyNode{RawLink: link, Protocol: "tuic", Config: make(map[string]interface{})}
-	node.Name = "TUIC Node"
-	return node, nil
-}
-
 func parseQueryParams(query string) url.Values {
 	values, _ := url.ParseQuery(query)
 	return values
@@ -352,7 +436,7 @@ func processNodes(nodes []*ProxyNode, sniWhitelist []string) []CheckResult {
 	for result := range resultChan {
 		processed++
 		if processed%100 == 0 {
-			fmt.Printf("⏳ Processed: %d/%d\n", processed, len(nodes))
+			fmt.Printf("⏳ Processed: %d/%d | Success: %d\n", processed, len(nodes), len(results))
 		}
 		if result.Success {
 			results = append(results, result)
@@ -372,14 +456,18 @@ func worker(wg *sync.WaitGroup, nodeChan <-chan *ProxyNode, resultChan chan<- Ch
 func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 	result := CheckResult{Node: node, Success: false}
 
-	// --- ЛОГИКА ФИЛЬТРАЦИИ SNI ---
+	// Фильтрация SNI
 	if len(sniWhitelist) > 0 {
 		nodeSNI := getConfigValue(node.Config, "sni", "")
+		if nodeSNI == "" {
+			atomic.AddInt32(&statsNoSNI, 1)
+			return result
+		}
 		if !isTargetSNI(nodeSNI, sniWhitelist) {
+			atomic.AddInt32(&statsSNIRejected, 1)
 			return result
 		}
 	}
-	// -----------------------------
 
 	port := int(atomic.AddInt32(&portCounter, 1))
 	if port > MaxPortRange {
@@ -391,6 +479,7 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 	defer os.Remove(configPath)
 
 	if err := generateXrayConfig(node, port, configPath); err != nil {
+		atomic.AddInt32(&statsConfigFailed, 1)
 		return result
 	}
 
@@ -401,6 +490,7 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
+		atomic.AddInt32(&statsConfigFailed, 1)
 		return result
 	}
 	defer func() {
@@ -408,17 +498,27 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 		cmd.Wait()
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	// === РАНДОМИЗИРОВАННАЯ ЗАДЕРЖКА ===
+	time.Sleep(randomDelay(300, 800))
 
-	if !checkConnectivity(port) {
-		return result
+	// === РОТАЦИЯ ТЕСТОВОГО URL ===
+	testURL := randomTestURL()
+	if !checkConnectivity(port, testURL) {
+		// Вторая попытка с другим URL
+		testURL2 := randomTestURL()
+		if !checkConnectivity(port, testURL2) {
+			atomic.AddInt32(&statsConnectFailed, 1)
+			return result
+		}
 	}
 
 	speed := measureSpeed(port)
 	if speed < 1.0 {
+		atomic.AddInt32(&statsSpeedFailed, 1)
 		return result
 	}
 
+	atomic.AddInt32(&statsSuccess, 1)
 	countryID := getCountryCode(node.Address)
 	result.Speed = speed
 	result.CountryID = countryID
@@ -456,7 +556,7 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 							{
 								"id":         node.Config["uuid"],
 								"encryption": getConfigValue(node.Config, "encryption", "none"),
-								"flow":       node.Config["flow"], // Vision flow передается здесь
+								"flow":       node.Config["flow"],
 							},
 						},
 					},
@@ -513,17 +613,19 @@ func buildStreamSettings(node *ProxyNode) map[string]interface{} {
 	security := getConfigValue(node.Config, "security", "none")
 	flow := getConfigValue(node.Config, "flow", "")
 
-	// Если обнаружен Vision Flow, принудительно включаем TLS, если он не указан
 	if flow == "xtls-rprx-vision" && security == "none" {
 		security = "tls"
 	}
+
+	// === РАНДОМИЗАЦИЯ FINGERPRINT ===
+	fp := randomFingerprint()
 
 	if security == "tls" {
 		streamSettings["security"] = "tls"
 		streamSettings["tlsSettings"] = map[string]interface{}{
 			"serverName":    node.Config["sni"],
-			"fingerprint":   "chrome", // uTLS: Эмуляция Chrome для JA3
-			"alpn":          []string{"h2", "http/1.1"}, // Критично для Vision
+			"fingerprint":   fp, // Рандомизированный
+			"alpn":          []string{"h2", "http/1.1"},
 			"allowInsecure": true,
 		}
 	} else if security == "reality" {
@@ -532,8 +634,8 @@ func buildStreamSettings(node *ProxyNode) map[string]interface{} {
 			"serverName":  node.Config["sni"],
 			"publicKey":   node.Config["pbk"],
 			"shortId":     node.Config["sid"],
-			"fingerprint": "chrome", // uTLS: Эмуляция Chrome для Reality
-			"spiderX":     "/",
+			"fingerprint": fp,              // Рандомизированный
+			"spiderX":     randomSpiderX(), // Рандомизированный путь
 		}
 	}
 	return streamSettings
@@ -560,7 +662,7 @@ func isTargetSNI(nodeSNI string, whitelist []string) bool {
 	return false
 }
 
-func checkConnectivity(port int) bool {
+func checkConnectivity(port int, testURL string) bool {
 	dialer, err := goproxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", port), nil, goproxy.Direct)
 	if err != nil {
 		return false
@@ -568,21 +670,20 @@ func checkConnectivity(port int) bool {
 
 	client := &http.Client{
 		Transport: &http.Transport{
-			Dial:                dialer.Dial,
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-			DisableKeepAlives:   true,
-			MaxIdleConns:        1,
-			MaxIdleConnsPerHost: 1,
+			Dial:              dialer.Dial,
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+			DisableKeepAlives: true,
+			MaxIdleConns:      1,
 		},
 		Timeout: TimeoutCheck,
 	}
 
-	resp, err := client.Get(TestURL)
+	resp, err := client.Get(testURL)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == 204
+	return resp.StatusCode == 204 || resp.StatusCode == 200
 }
 
 func measureSpeed(port int) float64 {
@@ -593,11 +694,10 @@ func measureSpeed(port int) float64 {
 
 	client := &http.Client{
 		Transport: &http.Transport{
-			Dial:                dialer.Dial,
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-			DisableKeepAlives:   true,
-			MaxIdleConns:        1,
-			MaxIdleConnsPerHost: 1,
+			Dial:              dialer.Dial,
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+			DisableKeepAlives: true,
+			MaxIdleConns:      1,
 		},
 		Timeout: TimeoutSpeed,
 	}
@@ -682,10 +782,10 @@ func saveResults(results []CheckResult) {
 		file.WriteString(newLink)
 	}
 
-	fmt.Printf("📊 Results: UF=%d, FAST=%d, NORM=%d\n",
-		countLinesInFile("uf.txt"),
-		countLinesInFile("fast.txt"),
-		countLinesInFile("norm.txt"))
+	fmt.Printf("\n📊 Results saved:\n")
+	fmt.Printf("   💎 Ultra Fast: %d\n", countLinesInFile("uf.txt"))
+	fmt.Printf("   ⚡ Fast:       %d\n", countLinesInFile("fast.txt"))
+	fmt.Printf("   ✅ Normal:     %d\n", countLinesInFile("norm.txt"))
 }
 
 func countLinesInFile(filename string) int {
@@ -700,4 +800,5 @@ func countLinesInFile(filename string) int {
 		count++
 	}
 	return count
-} 
+}
+ 
