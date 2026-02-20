@@ -79,6 +79,11 @@ var spiderXPaths = []string{
 }
 
 var (
+        debugMode    bool
+        debugFile    *os.File
+        debugCount   int32
+        debugLimit   int32 = 10 // Логировать только первые 10 ошибок
+
         countryFlags = map[string]string{
                 "US": "🇺🇸", "GB": "🇬🇧", "DE": "🇩🇪", "FR": "🇫🇷", "NL": "🇳🇱",
                 "CA": "🇨🇦", "JP": "🇯🇵", "KR": "🇰🇷", "SG": "🇸🇬", "HK": "🇭🇰",
@@ -154,7 +159,18 @@ func main() {
 
         inputFile := flag.String("input", "proxies.txt", "Path to the input proxy list file")
         whitelistFile := flag.String("whitelist", "whitelist.txt", "Path to the SNI whitelist file")
+        flag.BoolVar(&debugMode, "debug", false, "Enable Xray debug logging")
         flag.Parse()
+
+        if debugMode {
+                var err error
+                debugFile, err = os.Create("xray_debug.log")
+                if err != nil {
+                        fmt.Printf("❌ Cannot create debug log: %v\n", err)
+                } else {
+                        fmt.Println("📝 Debug mode enabled, logging to xray_debug.log")
+                }
+        }
 
         if err := setupDependencies(); err != nil {
                 fmt.Printf("❌ Failed to setup dependencies: %v\n", err)
@@ -487,11 +503,61 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
         defer cancel()
 
         cmd := exec.CommandContext(ctx, "./xray", "run", "-c", configPath)
-        cmd.Stdout = nil
-        cmd.Stderr = nil
-        if err := cmd.Start(); err != nil {
-                atomic.AddInt32(&statsConfigFailed, 1)
-                return result
+        
+        // Логирование Xray если включён debug
+        if debugMode && debugFile != nil {
+                var xrayLog []byte
+                xrayOut, _ := cmd.StdoutPipe()
+                xrayErr, _ := cmd.StderrPipe()
+                if err := cmd.Start(); err != nil {
+                        atomic.AddInt32(&statsConfigFailed, 1)
+                        // Логируем ошибку запуска
+                        if atomic.AddInt32(&debugCount, 1) <= debugLimit {
+                                debugFile.WriteString(fmt.Sprintf("\n=== XRAY START ERROR ===\n"))
+                                debugFile.WriteString(fmt.Sprintf("Node: %s:%d\n", node.Address, node.Port))
+                                debugFile.WriteString(fmt.Sprintf("SNI: %s\n", node.Config["sni"]))
+                                debugFile.WriteString(fmt.Sprintf("Error: %v\n", err))
+                        }
+                        return result
+                }
+                go func() {
+                        buf := make([]byte, 4096)
+                        for {
+                                n, err := xrayOut.Read(buf)
+                                if n > 0 {
+                                        xrayLog = append(xrayLog, buf[:n]...)
+                                }
+                                if err != nil {
+                                        break
+                                }
+                        }
+                }()
+                go func() {
+                        buf := make([]byte, 4096)
+                        for {
+                                n, err := xrayErr.Read(buf)
+                                if n > 0 {
+                                        xrayLog = append(xrayLog, buf[:n]...)
+                                }
+                                if err != nil {
+                                        break
+                                }
+                        }
+                }()
+                // Сохраняем лог для дебага
+                defer func() {
+                        if len(xrayLog) > 0 && atomic.LoadInt32(&debugCount) <= debugLimit {
+                                debugFile.WriteString(fmt.Sprintf("\n=== XRAY LOG %s:%d ===\n", node.Address, node.Port))
+                                debugFile.Write(xrayLog)
+                        }
+                }()
+        } else {
+                cmd.Stdout = nil
+                cmd.Stderr = nil
+                if err := cmd.Start(); err != nil {
+                        atomic.AddInt32(&statsConfigFailed, 1)
+                        return result
+                }
         }
         defer func() {
                 cmd.Process.Kill()
@@ -508,6 +574,14 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
                 testURL2 := randomTestURL()
                 if !checkConnectivity(port, testURL2) {
                         atomic.AddInt32(&statsConnectFailed, 1)
+                        // Логируем failed соединение
+                        if debugMode && debugFile != nil && atomic.AddInt32(&debugCount, 1) <= debugLimit {
+                                debugFile.WriteString(fmt.Sprintf("\n=== CONNECT FAILED ===\n"))
+                                debugFile.WriteString(fmt.Sprintf("Node: %s:%d\n", node.Address, node.Port))
+                                debugFile.WriteString(fmt.Sprintf("SNI: %s\n", node.Config["sni"]))
+                                debugFile.WriteString(fmt.Sprintf("Security: %s\n", node.Config["security"]))
+                                debugFile.WriteString(fmt.Sprintf("Protocol: %s\n", node.Protocol))
+                        }
                         return result
                 }
         }
@@ -802,4 +876,3 @@ func countLinesInFile(filename string) int {
         }
         return count
 }
- 
