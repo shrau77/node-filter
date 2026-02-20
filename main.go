@@ -27,26 +27,27 @@ import (
 )
 
 const (
-        WorkerCount    = 120
+        WorkerCount    = 50   // Уменьшено для стабильности (было 120)
         MinPortRange   = 20000
         MaxPortRange   = 35000
         XrayURL        = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
         GeoIPURL       = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
         SpeedTestURL   = "https://speed.cloudflare.com/__down?bytes=2097152"
         SpeedTestSize  = 1 * 1024 * 1024
-        TimeoutCheck   = 12 * time.Second
-        TimeoutSpeed   = 18 * time.Second
+        TimeoutCheck   = 5 * time.Second   // Уменьшено (было 12s), как в a2ray ~3s
+        TimeoutSpeed   = 10 * time.Second  // Уменьшено (было 18s)
         UltraFastSpeed = 3.5
         FastSpeed      = 2.5
 )
 
 // === ТЕСТОВЫЕ URL ДЛЯ РОТАЦИИ ===
+// ВАЖНО: HTTP работает лучше через SOCKS5 прокси (нет лишнего TLS handshake)
 var testURLs = []string{
-        "https://www.youtube.com/generate_204",
-        "https://play.google.com/log?format=json&hasfast=true",
-        "https://www.google.com/generate_204",
-        "https://clients4.google.com/generate_204",
-        "https://www.gstatic.com/generate_204",
+        "http://gstatic.com/generate_204",
+        "http://cp.cloudflare.com/generate_204",
+        "http://www.google.com/generate_204",
+        "http://clients4.google.com/generate_204",
+        "http://www.gstatic.com/generate_204",
 }
 
 // === FINGERPRINTS ДЛЯ РАНДОМИЗАЦИИ ===
@@ -80,9 +81,10 @@ var spiderXPaths = []string{
 
 var (
         debugMode    bool
+        verboseMode  bool
         debugFile    *os.File
         debugCount   int32
-        debugLimit   int32 = 10 // Логировать только первые 10 ошибок
+        debugLimit   int32 = 30 // Логировать первые 30 ошибок
 
         countryFlags = map[string]string{
                 "US": "🇺🇸", "GB": "🇬🇧", "DE": "🇩🇪", "FR": "🇫🇷", "NL": "🇳🇱",
@@ -159,7 +161,8 @@ func main() {
 
         inputFile := flag.String("input", "proxies.txt", "Path to the input proxy list file")
         whitelistFile := flag.String("whitelist", "whitelist.txt", "Path to the SNI whitelist file")
-        flag.BoolVar(&debugMode, "debug", false, "Enable Xray debug logging")
+        flag.BoolVar(&debugMode, "debug", false, "Enable Xray debug logging to file")
+        flag.BoolVar(&verboseMode, "verbose", false, "Enable verbose output (Xray logs to console)")
         flag.Parse()
 
         if debugMode {
@@ -170,6 +173,9 @@ func main() {
                 } else {
                         fmt.Println("📝 Debug mode enabled, logging to xray_debug.log")
                 }
+        }
+        if verboseMode {
+                fmt.Println("🔊 Verbose mode enabled - Xray output will be shown")
         }
 
         if err := setupDependencies(); err != nil {
@@ -504,19 +510,53 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
 
         cmd := exec.CommandContext(ctx, "./xray", "run", "-c", configPath)
         
-        // Логирование Xray если включён debug
-        if debugMode && debugFile != nil {
+        // === VERBOSE MODE: вывод Xray логов в консоль ===
+        if verboseMode {
+                // Читаем конфиг для логирования
+                configData, _ := os.ReadFile(configPath)
+                
+                currentDebug := atomic.AddInt32(&debugCount, 1)
+                if currentDebug <= debugLimit {
+                        fmt.Printf("\n\n" + strings.Repeat("=", 60) + "\n")
+                        fmt.Printf("🔍 CHECKING NODE #%d: %s:%d\n", currentDebug, node.Address, node.Port)
+                        fmt.Printf("   Protocol: %s\n", node.Protocol)
+                        fmt.Printf("   SNI: %s\n", node.Config["sni"])
+                        fmt.Printf("   Security: %s\n", node.Config["security"])
+                        fmt.Printf("   Flow: %s\n", node.Config["flow"])
+                        fmt.Printf("   Fingerprint: %s\n", node.Config["fp"])
+                        fmt.Printf("   Type: %s\n", node.Config["type"])
+                        fmt.Printf("\n📄 XRAY CONFIG:\n%s\n", string(configData))
+                        fmt.Printf(strings.Repeat("-", 60) + "\n")
+                        fmt.Printf("📡 XRAY OUTPUT:\n")
+                }
+                
+                cmd.Stdout = os.Stdout
+                cmd.Stderr = os.Stderr
+                if err := cmd.Start(); err != nil {
+                        if currentDebug <= debugLimit {
+                                fmt.Printf("❌ XRAY START ERROR: %v\n", err)
+                        }
+                        atomic.AddInt32(&statsConfigFailed, 1)
+                        return result
+                }
+        } else if debugMode && debugFile != nil {
+                // === DEBUG MODE: логирование в файл ===
                 var xrayLog []byte
                 xrayOut, _ := cmd.StdoutPipe()
                 xrayErr, _ := cmd.StderrPipe()
+                
+                // Читаем конфиг
+                configData, _ := os.ReadFile(configPath)
+                
                 if err := cmd.Start(); err != nil {
                         atomic.AddInt32(&statsConfigFailed, 1)
-                        // Логируем ошибку запуска
-                        if atomic.AddInt32(&debugCount, 1) <= debugLimit {
-                                debugFile.WriteString(fmt.Sprintf("\n=== XRAY START ERROR ===\n"))
+                        currentDebug := atomic.AddInt32(&debugCount, 1)
+                        if currentDebug <= debugLimit {
+                                debugFile.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("=", 60)))
+                                debugFile.WriteString("❌ XRAY START ERROR\n")
                                 debugFile.WriteString(fmt.Sprintf("Node: %s:%d\n", node.Address, node.Port))
-                                debugFile.WriteString(fmt.Sprintf("SNI: %s\n", node.Config["sni"]))
                                 debugFile.WriteString(fmt.Sprintf("Error: %v\n", err))
+                                debugFile.WriteString(fmt.Sprintf("Config:\n%s\n", string(configData)))
                         }
                         return result
                 }
@@ -544,11 +584,12 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
                                 }
                         }
                 }()
-                // Сохраняем лог для дебага
                 defer func() {
-                        if len(xrayLog) > 0 && atomic.LoadInt32(&debugCount) <= debugLimit {
-                                debugFile.WriteString(fmt.Sprintf("\n=== XRAY LOG %s:%d ===\n", node.Address, node.Port))
-                                debugFile.Write(xrayLog)
+                        if len(xrayLog) > 0 {
+                                debugFile.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("=", 60)))
+                                debugFile.WriteString(fmt.Sprintf("📡 XRAY LOG %s:%d\n", node.Address, node.Port))
+                                debugFile.WriteString(fmt.Sprintf("Config:\n%s\n", string(configData)))
+                                debugFile.WriteString(fmt.Sprintf("Output:\n%s\n", string(xrayLog)))
                         }
                 }()
         } else {
@@ -564,8 +605,24 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
                 cmd.Wait()
         }()
 
-        // === РАНДОМИЗИРОВАННАЯ ЗАДЕРЖКА ===
-        time.Sleep(randomDelay(300, 800))
+        // === ЖДЁМ ПОКА ПОРТ СТАНЕТ ДОСТУПЕН (как в a2ray.py) ===
+        portReady := false
+        for i := 0; i < 50; i++ {  // 50 * 50ms = 2.5s max
+                conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 50*time.Millisecond)
+                if err == nil {
+                        conn.Close()
+                        portReady = true
+                        break
+                }
+                time.Sleep(50 * time.Millisecond)
+        }
+        if !portReady {
+                atomic.AddInt32(&statsConnectFailed, 1)
+                if verboseMode {
+                        fmt.Printf("\n❌ PORT NOT READY: %s:%d (Xray failed to start listening)\n", node.Address, node.Port)
+                }
+                return result
+        }
 
         // === РОТАЦИЯ ТЕСТОВОГО URL ===
         testURL := randomTestURL()
@@ -574,13 +631,25 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
                 testURL2 := randomTestURL()
                 if !checkConnectivity(port, testURL2) {
                         atomic.AddInt32(&statsConnectFailed, 1)
+                        
                         // Логируем failed соединение
-                        if debugMode && debugFile != nil && atomic.AddInt32(&debugCount, 1) <= debugLimit {
-                                debugFile.WriteString(fmt.Sprintf("\n=== CONNECT FAILED ===\n"))
-                                debugFile.WriteString(fmt.Sprintf("Node: %s:%d\n", node.Address, node.Port))
-                                debugFile.WriteString(fmt.Sprintf("SNI: %s\n", node.Config["sni"]))
-                                debugFile.WriteString(fmt.Sprintf("Security: %s\n", node.Config["security"]))
-                                debugFile.WriteString(fmt.Sprintf("Protocol: %s\n", node.Protocol))
+                        if verboseMode {
+                                currentDebug := atomic.LoadInt32(&debugCount)
+                                if currentDebug <= debugLimit {
+                                        fmt.Printf("\n❌ CONNECT FAILED for %s:%d\n", node.Address, node.Port)
+                                        fmt.Printf("   Test URLs tried: %s, %s\n", testURL, testURL2)
+                                        fmt.Printf(strings.Repeat("=", 60) + "\n")
+                                }
+                        } else if debugMode && debugFile != nil {
+                                currentDebug := atomic.LoadInt32(&debugCount)
+                                if currentDebug <= debugLimit {
+                                        debugFile.WriteString(fmt.Sprintf("\n=== CONNECT FAILED ===\n"))
+                                        debugFile.WriteString(fmt.Sprintf("Node: %s:%d\n", node.Address, node.Port))
+                                        debugFile.WriteString(fmt.Sprintf("SNI: %s\n", node.Config["sni"]))
+                                        debugFile.WriteString(fmt.Sprintf("Security: %s\n", node.Config["security"]))
+                                        debugFile.WriteString(fmt.Sprintf("Protocol: %s\n", node.Protocol))
+                                        debugFile.WriteString(fmt.Sprintf("Test URLs: %s, %s\n", testURL, testURL2))
+                                }
                         }
                         return result
                 }
@@ -758,7 +827,8 @@ func checkConnectivity(port int, testURL string) bool {
                 return false
         }
         defer resp.Body.Close()
-        return resp.StatusCode == 204 || resp.StatusCode == 200
+        // a2ray.py: любой код < 400 считается успехом
+        return resp.StatusCode < 400
 }
 
 func measureSpeed(port int) float64 {
@@ -876,3 +946,4 @@ func countLinesInFile(filename string) int {
         }
         return count
 }
+ 
