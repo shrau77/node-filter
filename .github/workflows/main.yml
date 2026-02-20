@@ -3,6 +3,12 @@ on:
   schedule:
     - cron: '17 */4 * * *' # Запуск каждые 4 часа
   workflow_dispatch: # Позволяет запустить workflow вручную
+    inputs:
+      verbose:
+        description: 'Enable verbose debug output'
+        required: false
+        default: 'false'
+        type: boolean
 
 permissions:
   contents: write
@@ -30,7 +36,7 @@ jobs:
         run: |
           # Объединяем файлы
           cat ultra_elite_raw.txt business_raw.txt > combined_input_full.txt
-          
+
           # Убираем пустые строки на всякий случай
           sed -i '/^$/d' combined_input_full.txt
 
@@ -82,10 +88,10 @@ jobs:
         with:
           go-version: '1.21'
 
-      #- name: Setup Warp
-        #uses: fscarmen/warp-on-actions@v1.1
-        #with:
-          #stack: ipv4
+      - name: Setup Warp
+        uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
 
       - name: Fetch Whitelist
         run: |
@@ -103,13 +109,19 @@ jobs:
           go get github.com/oschwald/geoip2-golang
           go get golang.org/x/net/proxy
           go mod tidy
-          
+
           # Сборка
           go build -o checker main.go
           chmod +x checker
-          
-          # Запуск (Xray и GeoIP скачаются самим чекером автоматически)
-          ./checker -input input.txt -whitelist whitelist.txt
+
+          # Запуск с опциональным verbose
+          VERBOSE_FLAG=""
+          if [ "${{ inputs.verbose }}" = "true" ]; then
+            VERBOSE_FLAG="-verbose"
+            echo "🔊 Verbose mode ENABLED"
+          fi
+
+          ./checker -input input.txt -whitelist whitelist.txt $VERBOSE_FLAG
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
@@ -119,6 +131,15 @@ jobs:
             uf.txt
             fast.txt
             norm.txt
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Upload Debug Log (if exists)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ matrix.input_file }}
+          path: xray_debug.log
           retention-days: 1
           if-no-files-found: ignore
 
@@ -137,12 +158,12 @@ jobs:
       - name: Combine Files
         run: |
           touch uf.txt fast.txt norm.txt
-          
+
           # Проходим по всем папкам результатов
           find all_results -name "uf.txt" -exec cat {} + >> uf.txt
           find all_results -name "fast.txt" -exec cat {} + >> fast.txt
           find all_results -name "norm.txt" -exec cat {} + >> norm.txt
-          
+
           echo "Combined stats:"
           wc -l uf.txt fast.txt norm.txt
 
