@@ -27,7 +27,7 @@ import (
 )
 
 const (
-        WorkerCount    = 50   // Уменьшено для стабильности (было 120)
+        WorkerCount    = 20   // Уменьшено! 50 Xray процессов не могут стартовать одновременно
         MinPortRange   = 20000
         MaxPortRange   = 35000
         XrayURL        = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
@@ -82,6 +82,7 @@ var spiderXPaths = []string{
 var (
         debugMode    bool
         verboseMode  bool
+        saveFailed   bool  // Сохранять конфиги упавших нод
         debugFile    *os.File
         debugCount   int32
         debugLimit   int32 = 30 // Логировать первые 30 ошибок
@@ -336,9 +337,16 @@ func parseProxyLink(link string) (*ProxyNode, error) {
 func parseVLESS(link string) (*ProxyNode, error) {
         node := &ProxyNode{RawLink: link, Protocol: "vless", Config: make(map[string]interface{})}
 
-        // Исправленная регулярка с опциональным слешем
-        re := regexp.MustCompile(`vless://([^@]+)@([^:]+):(\d+)/?\?(.+)`)
-        matches := re.FindStringSubmatch(link)
+        // Сначала отделяем название ноды (после #)
+        mainPart := link
+        if idx := strings.Index(link, "#"); idx != -1 {
+                mainPart = link[:idx]
+                node.Name, _ = url.QueryUnescape(link[idx+1:])
+        }
+
+        // Регулярка БЕЗ захвата #названия
+        re := regexp.MustCompile(`vless://([^@]+)@([^:]+):(\d+)/?\?(.+)$`)
+        matches := re.FindStringSubmatch(mainPart)
         if len(matches) < 5 {
                 return nil, fmt.Errorf("invalid vless link")
         }
@@ -347,30 +355,41 @@ func parseVLESS(link string) (*ProxyNode, error) {
         node.Port, _ = strconv.Atoi(matches[3])
         params := parseQueryParams(matches[4])
 
+        // Очищаем type от мусора (берём только первое слово до спецсимволов)
+        netType := params.Get("type")
+        if idx := strings.IndexAny(netType, "#&;"); idx != -1 {
+                netType = netType[:idx]
+        }
+        netType = strings.TrimSpace(netType)
+        if netType == "" {
+                netType = "tcp"
+        }
+
         node.Config["uuid"] = uuid
         node.Config["security"] = params.Get("security")
         node.Config["encryption"] = params.Get("encryption")
         node.Config["flow"] = params.Get("flow")
-        node.Config["type"] = params.Get("type")
+        node.Config["type"] = netType
         node.Config["sni"] = params.Get("sni")
         node.Config["fp"] = params.Get("fp")
         node.Config["pbk"] = params.Get("pbk")
         node.Config["sid"] = params.Get("sid")
         node.Name = params.Get("fragment")
-        if node.Name == "" {
-                parts := strings.Split(link, "#")
-                if len(parts) > 1 {
-                        node.Name, _ = url.QueryUnescape(parts[1])
-                }
-        }
         return node, nil
 }
 
 func parseTrojan(link string) (*ProxyNode, error) {
         node := &ProxyNode{RawLink: link, Protocol: "trojan", Config: make(map[string]interface{})}
 
-        re := regexp.MustCompile(`trojan://([^@]+)@([^:]+):(\d+)/?\?(.+)`)
-        matches := re.FindStringSubmatch(link)
+        // Сначала отделяем название ноды (после #)
+        mainPart := link
+        if idx := strings.Index(link, "#"); idx != -1 {
+                mainPart = link[:idx]
+                node.Name, _ = url.QueryUnescape(link[idx+1:])
+        }
+
+        re := regexp.MustCompile(`trojan://([^@]+)@([^:]+):(\d+)/?\?(.+)$`)
+        matches := re.FindStringSubmatch(mainPart)
         if len(matches) < 5 {
                 return nil, fmt.Errorf("invalid trojan link")
         }
@@ -379,16 +398,20 @@ func parseTrojan(link string) (*ProxyNode, error) {
         node.Port, _ = strconv.Atoi(matches[3])
         params := parseQueryParams(matches[4])
 
+        // Очищаем type от мусора
+        netType := params.Get("type")
+        if idx := strings.IndexAny(netType, "#&;"); idx != -1 {
+                netType = netType[:idx]
+        }
+        netType = strings.TrimSpace(netType)
+        if netType == "" {
+                netType = "tcp"
+        }
+
         node.Config["sni"] = params.Get("sni")
-        node.Config["type"] = params.Get("type")
+        node.Config["type"] = netType
         node.Config["security"] = params.Get("security")
         node.Name = params.Get("fragment")
-        if node.Name == "" {
-                parts := strings.Split(link, "#")
-                if len(parts) > 1 {
-                        node.Name, _ = url.QueryUnescape(parts[1])
-                }
-        }
         return node, nil
 }
 
@@ -605,9 +628,10 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
                 cmd.Wait()
         }()
 
-        // === ЖДЁМ ПОКА ПОРТ СТАНЕТ ДОСТУПЕН (как в a2ray.py) ===
+        // === ЖДЁМ ПОКА ПОРТ СТАНЕТ ДОСТУПЕН ===
+        // Увеличил timeout и добавил больше попыток
         portReady := false
-        for i := 0; i < 50; i++ {  // 50 * 50ms = 2.5s max
+        for i := 0; i < 100; i++ {  // 100 * 50ms = 5s max
                 conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 50*time.Millisecond)
                 if err == nil {
                         conn.Close()
@@ -619,7 +643,8 @@ func checkNode(node *ProxyNode, sniWhitelist []string) CheckResult {
         if !portReady {
                 atomic.AddInt32(&statsConnectFailed, 1)
                 if verboseMode {
-                        fmt.Printf("\n❌ PORT NOT READY: %s:%d (Xray failed to start listening)\n", node.Address, node.Port)
+                        fmt.Printf("\n❌ PORT NOT READY: %s:%d (Xray failed to start in 5s)\n", node.Address, node.Port)
+                        // Попробуем прочитать stderr если есть
                 }
                 return result
         }
@@ -749,8 +774,17 @@ func generateXrayConfig(node *ProxyNode, port int, filename string) error {
 }
 
 func buildStreamSettings(node *ProxyNode) map[string]interface{} {
+        // Очищаем network от мусора на всякий случай
+        netType := getConfigValue(node.Config, "type", "tcp")
+        if idx := strings.IndexAny(netType, "#&; "); idx != -1 {
+                netType = netType[:idx]
+        }
+        if netType == "" {
+                netType = "tcp"
+        }
+
         streamSettings := map[string]interface{}{
-                "network": getConfigValue(node.Config, "type", "tcp"),
+                "network": netType,
         }
 
         security := getConfigValue(node.Config, "security", "none")
@@ -946,4 +980,3 @@ func countLinesInFile(filename string) int {
         }
         return count
 }
- 
