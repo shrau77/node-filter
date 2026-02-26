@@ -62,6 +62,9 @@ jobs:
           echo "v2_norm=$V2_NORM" >> $GITHUB_OUTPUT
           
           echo "diff_total=$DIFF_TOTAL" >> $GITHUB_OUTPUT
+          echo "diff_uf=$DIFF_UF" >> $GITHUB_OUTPUT
+          echo "diff_fast=$DIFF_FAST" >> $GITHUB_OUTPUT
+          echo "diff_norm=$DIFF_NORM" >> $GITHUB_OUTPUT
           echo "filtered_percent=$PERCENT" >> $GITHUB_OUTPUT
           
           echo ""
@@ -119,15 +122,29 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MESSAGE="📊 *V1 vs V2 Comparison* 📊%0A%0A"
-          MESSAGE+="┃ Category ┃ V1 ┃ V2 ┃ Diff ┃%0A"
-          MESSAGE+="┃━━━━━━━━━━┃━━━━┃━━━━┃━━━━━━┃%0A"
-          MESSAGE+="┃ 💎 UF ┃ ${{ steps.stats.outputs.v1_uf }} ┃ ${{ steps.stats.outputs.v2_uf }} ┃ ${{ steps.stats.outputs.diff_uf }} ┃%0A"
-          MESSAGE+="┃ ⚡ Fast ┃ ${{ steps.stats.outputs.v1_fast }} ┃ ${{ steps.stats.outputs.v2_fast }} ┃ ${{ steps.stats.outputs.diff_fast }} ┃%0A"
-          MESSAGE+="┃ ✅ Norm ┃ ${{ steps.stats.outputs.v1_norm }} ┃ ${{ steps.stats.outputs.v2_norm }} ┃ ${{ steps.stats.outputs.diff_norm }} ┃%0A"
-          MESSAGE+="┃━━━━━━━━━━┃━━━━┃━━━━┃━━━━━━┃%0A"
-          MESSAGE+="┃ *TOTAL* ┃ *${{ steps.stats.outputs.v1_total }}* ┃ *${{ steps.stats.outputs.v2_total }}* ┃ *${{ steps.stats.outputs.diff_total }}* ┃%0A%0A"
-          MESSAGE+="📉 V2 filtered: ${{ steps.stats.outputs.filtered_percent }}%"
+          # Форматируем diff с знаком
+          DIFF_UF_FMT="${{ steps.stats.outputs.diff_uf }}"
+          DIFF_FAST_FMT="${{ steps.stats.outputs.diff_fast }}"
+          DIFF_NORM_FMT="${{ steps.stats.outputs.diff_norm }}"
+          DIFF_TOTAL_FMT="${{ steps.stats.outputs.diff_total }}"
+          
+          # Добавляем знак + если число положительное
+          [ "$DIFF_UF_FMT" -gt 0 ] 2>/dev/null && DIFF_UF_FMT="+$DIFF_UF_FMT" || true
+          [ "$DIFF_FAST_FMT" -gt 0 ] 2>/dev/null && DIFF_FAST_FMT="+$DIFF_FAST_FMT" || true
+          [ "$DIFF_NORM_FMT" -gt 0 ] 2>/dev/null && DIFF_NORM_FMT="+$DIFF_NORM_FMT" || true
+          [ "$DIFF_TOTAL_FMT" -gt 0 ] 2>/dev/null && DIFF_TOTAL_FMT="+$DIFF_TOTAL_FMT" || true
+          
+          MESSAGE="📊 *V1 vs V2 Comparison*%0A%0A"
+          MESSAGE+='```%0A'
+          MESSAGE+="Category      V1    V2    Diff%0A"
+          MESSAGE+="─────────────────────────────%0A"
+          MESSAGE+="💎 Ultra Fast  ${{ steps.stats.outputs.v1_uf }}   ${{ steps.stats.outputs.v2_uf }}    $DIFF_UF_FMT%0A"
+          MESSAGE+="⚡ Fast        ${{ steps.stats.outputs.v1_fast }}    ${{ steps.stats.outputs.v2_fast }}     $DIFF_FAST_FMT%0A"
+          MESSAGE+="✅ Normal      ${{ steps.stats.outputs.v1_norm }}     ${{ steps.stats.outputs.v2_norm }}      $DIFF_NORM_FMT%0A"
+          MESSAGE+="─────────────────────────────%0A"
+          MESSAGE+="📊 TOTAL       ${{ steps.stats.outputs.v1_total }}   ${{ steps.stats.outputs.v2_total }}   $DIFF_TOTAL_FMT%0A"
+          MESSAGE+='```%0A%0A'
+          MESSAGE+="📉 V2 filtered: *${{ steps.stats.outputs.filtered_percent }}%* of nodes"
 
           curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID" \
