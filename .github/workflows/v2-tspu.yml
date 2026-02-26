@@ -7,7 +7,7 @@ on:
       verbose:
         description: 'Enable verbose debug output'
         required: false
-        default: 'true'
+        default: 'false'
         type: boolean
       strong_mode:
         description: 'Enable strong mode (N consecutive requests)'
@@ -48,7 +48,7 @@ jobs:
           sed -i '/^$/d' combined_input_full.txt
           
           # V2 работает строже - меньше чанк, т.к. проверка дольше
-          CHUNK_SIZE=400
+          CHUNK_SIZE=300
           mkdir -p input_chunks
           split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
           
@@ -75,10 +75,10 @@ jobs:
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 15  # Ограничиваем параллелизм для V2
+      max-parallel: 10  # Уменьшено - V2 более ресурсоёмкий
       matrix:
         include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
@@ -95,7 +95,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: true
+          cache: false  # Отключаем кэш - нет go.sum в репозитории
 
       - name: Setup Warp
         uses: fscarmen/warp-on-actions@v1.1
@@ -129,16 +129,14 @@ jobs:
         run: |
           cd v2-tspu-check
           
-          # Создаём go.mod если нет
-          if [ ! -f go.mod ]; then
-            go mod init checker-v2
-            go get github.com/oschwald/geoip2-golang@v1.9.0
-            go get golang.org/x/net@v0.23.0
-            go mod tidy
-          fi
-
+          # Загружаем зависимости
+          go mod download
+          go mod tidy
+          
           go build -o checker-v2 main.go
           chmod +x checker-v2
+          
+          # Копируем бинарник в корень
           cp checker-v2 ..
 
       - name: Run V2 Checker with TSPU Checks
@@ -171,6 +169,7 @@ jobs:
           echo "=============================================="
           echo ""
           
+          # Запускаем из корня - xray и GeoIP скачаются сюда
           ./checker-v2 -input input.txt -whitelist whitelist.txt $VERBOSE_FLAG $STRONG_FLAG $HTTPS_FLAG
 
       - name: Upload Results V2
@@ -189,9 +188,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: debug-v2-${{ matrix.input_file }}
-          path: |
-            xray_debug.log
-            v2-tspu-check/xray_debug.log
+          path: xray_debug.log
           retention-days: 1
           if-no-files-found: ignore
 
@@ -211,12 +208,12 @@ jobs:
         run: |
           touch uf_v2.txt fast_v2.txt norm_v2.txt
 
-          find all_results -name "uf_v2.txt" -exec cat {} + >> uf_v2.txt
-          find all_results -name "fast_v2.txt" -exec cat {} + >> fast_v2.txt
-          find all_results -name "norm_v2.txt" -exec cat {} + >> norm_v2.txt
+          find all_results -name "uf_v2.txt" -exec cat {} + >> uf_v2.txt || true
+          find all_results -name "fast_v2.txt" -exec cat {} + >> fast_v2.txt || true
+          find all_results -name "norm_v2.txt" -exec cat {} + >> norm_v2.txt || true
 
           echo "Combined V2 stats:"
-          wc -l uf_v2.txt fast_v2.txt norm_v2.txt
+          wc -l uf_v2.txt fast_v2.txt norm_v2.txt || echo "No results found"
 
       - name: Push V2 Results to HPP Repo
         env:
@@ -230,16 +227,16 @@ jobs:
           # Создаём папку для v2 если нет
           mkdir -p v2
 
-          cp ../uf_v2.txt v2/
-          cp ../fast_v2.txt v2/
-          cp ../norm_v2.txt v2/
+          cp ../uf_v2.txt v2/ 2>/dev/null || echo "No uf_v2.txt"
+          cp ../fast_v2.txt v2/ 2>/dev/null || echo "No fast_v2.txt"
+          cp ../norm_v2.txt v2/ 2>/dev/null || echo "No norm_v2.txt"
 
           # Также копируем в корень как альтернативный источник
-          cp ../uf_v2.txt .
-          cp ../fast_v2.txt .
-          cp ../norm_v2.txt .
+          cp ../uf_v2.txt . 2>/dev/null || true
+          cp ../fast_v2.txt . 2>/dev/null || true
+          cp ../norm_v2.txt . 2>/dev/null || true
 
-          git add v2/ uf_v2.txt fast_v2.txt norm_v2.txt
+          git add v2/ uf_v2.txt fast_v2.txt norm_v2.txt 2>/dev/null || true
           git commit -m "V2 TSPU Check Update: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
           git push
 
@@ -249,9 +246,9 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          UF=$(grep -c "://" uf_v2.txt || echo 0)
-          FAST=$(grep -c "://" fast_v2.txt || echo 0)
-          NORM=$(grep -c "://" norm_v2.txt || echo 0)
+          UF=$(grep -c "://" uf_v2.txt 2>/dev/null || echo 0)
+          FAST=$(grep -c "://" fast_v2.txt 2>/dev/null || echo 0)
+          NORM=$(grep -c "://" norm_v2.txt 2>/dev/null || echo 0)
 
           MESSAGE="🛡️ *L7 V2 TSPU Check Results* 🛡️%0A%0A💎 *Ultra Fast:* $UF%0A⚡ *Fast:* $FAST%0A✅ *Normal:* $NORM%0A%0A🔬 *TSPU-verified nodes*%0A📦 _Results pushed to HPP/v2/_"
 
