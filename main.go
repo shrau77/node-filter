@@ -936,28 +936,45 @@ func saveResults(results []CheckResult) {
         defer fastFile.Close()
         defer normFile.Close()
 
+        counter := 0
         for _, result := range results {
+                counter++
+                
+                // Флаг и страна
                 flag := countryFlags[result.CountryID]
                 if flag == "" {
                         flag = "🌐"
                 }
-                name := result.Node.Name
-                name = strings.ReplaceAll(name, "🌐 UN", fmt.Sprintf("%s %s", flag, result.CountryID))
-
+                country := result.CountryID
+                if country == "" {
+                        country = "UN"
+                }
+                
+                // Протокол в верхнем регистре
+                protocol := strings.ToUpper(result.Node.Protocol)
+                
+                // Скорость
+                speedStr := fmt.Sprintf("%.1f MB/s", result.Speed)
+                
+                // Тег скорости и файл
                 var speedTag string
                 var file *os.File
                 if result.Speed >= UltraFastSpeed {
-                        speedTag = " | YT | UF"
+                        speedTag = "UF"
                         file = ufFile
                 } else if result.Speed >= FastSpeed {
-                        speedTag = " | YT | FAST"
+                        speedTag = "FAST"
                         file = fastFile
                 } else {
-                        speedTag = " | YT | NORM"
+                        speedTag = "NORM"
                         file = normFile
                 }
+                
+                // Формат: #[VLESS] 🇺🇸 US | 3.5 MB/s | UF
+                name := fmt.Sprintf("#[%s] %s %s | %s | %s", protocol, flag, country, speedStr, speedTag)
+                
                 link := strings.Split(result.Node.RawLink, "#")[0]
-                newLink := fmt.Sprintf("%s#%s%s\n", link, url.QueryEscape(name), speedTag)
+                newLink := fmt.Sprintf("%s#%s\n", link, url.QueryEscape(name))
                 file.WriteString(newLink)
         }
 

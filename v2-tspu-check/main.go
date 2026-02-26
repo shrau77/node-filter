@@ -1143,33 +1143,47 @@ func saveResults(results []CheckResult) {
         defer normFile.Close()
 
         for _, result := range results {
+                // Флаг и страна
                 flag := countryFlags[result.CountryID]
                 if flag == "" {
                         flag = "🌐"
                 }
-                name := result.Node.Name
-                name = strings.ReplaceAll(name, "🌐 UN", fmt.Sprintf("%s %s", flag, result.CountryID))
-
-                // Добавляем информацию о задержке в название
-                latencyTag := ""
-                if result.Latency > 0 {
-                        latencyTag = fmt.Sprintf(" | %dms", result.Latency.Milliseconds())
+                country := result.CountryID
+                if country == "" {
+                        country = "UN"
                 }
-
+                
+                // Протокол в верхнем регистре
+                protocol := strings.ToUpper(result.Node.Protocol)
+                
+                // Скорость
+                speedStr := fmt.Sprintf("%.1f MB/s", result.Speed)
+                
+                // Задержка (для V2)
+                latencyStr := ""
+                if result.Latency > 0 {
+                        latencyStr = fmt.Sprintf(" | %dms", result.Latency.Milliseconds())
+                }
+                
+                // Тег скорости и файл
                 var speedTag string
                 var file *os.File
                 if result.Speed >= UltraFastSpeed {
-                        speedTag = fmt.Sprintf(" | YT | UF%s", latencyTag)
+                        speedTag = "UF"
                         file = ufFile
                 } else if result.Speed >= FastSpeed {
-                        speedTag = fmt.Sprintf(" | YT | FAST%s", latencyTag)
+                        speedTag = "FAST"
                         file = fastFile
                 } else {
-                        speedTag = fmt.Sprintf(" | YT | NORM%s", latencyTag)
+                        speedTag = "NORM"
                         file = normFile
                 }
+                
+                // Формат: #[VLESS] 🇺🇸 US | 3.5 MB/s | 245ms | UF
+                name := fmt.Sprintf("#[%s] %s %s | %s%s | %s", protocol, flag, country, speedStr, latencyStr, speedTag)
+                
                 link := strings.Split(result.Node.RawLink, "#")[0]
-                newLink := fmt.Sprintf("%s#%s%s\n", link, url.QueryEscape(name), speedTag)
+                newLink := fmt.Sprintf("%s#%s\n", link, url.QueryEscape(name))
                 file.WriteString(newLink)
         }
 
