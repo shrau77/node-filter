@@ -1,0 +1,135 @@
+name: Compare V1 vs V2 Results
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *' # Каждые 6 часов
+
+permissions:
+  contents: write
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout HPP Repo
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git clone https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/shrau77/hpp.git hpp
+          cd hpp
+          git config user.name "Compare-Bot"
+          git config user.email "bot@github.com"
+
+      - name: Calculate Stats
+        id: stats
+        run: |
+          cd hpp
+          
+          # V1 stats
+          V1_UF=$(grep -c "://" uf.txt 2>/dev/null || echo 0)
+          V1_FAST=$(grep -c "://" fast.txt 2>/dev/null || echo 0)
+          V1_NORM=$(grep -c "://" norm.txt 2>/dev/null || echo 0)
+          V1_TOTAL=$((V1_UF + V1_FAST + V1_NORM))
+          
+          # V2 stats
+          V2_UF=$(grep -c "://" v2/uf_v2.txt 2>/dev/null || echo 0)
+          V2_FAST=$(grep -c "://" v2/fast_v2.txt 2>/dev/null || echo 0)
+          V2_NORM=$(grep -c "://" v2/norm_v2.txt 2>/dev/null || echo 0)
+          V2_TOTAL=$((V2_UF + V2_FAST + V2_NORM))
+          
+          # Разница
+          DIFF_TOTAL=$((V2_TOTAL - V1_TOTAL))
+          DIFF_UF=$((V2_UF - V1_UF))
+          DIFF_FAST=$((V2_FAST - V1_FAST))
+          DIFF_NORM=$((V2_NORM - V1_NORM))
+          
+          # Процент отсеянных V2
+          if [ $V1_TOTAL -gt 0 ]; then
+            FILTERED=$((V1_TOTAL - V2_TOTAL))
+            PERCENT=$(echo "scale=1; $FILTERED * 100 / $V1_TOTAL" | bc)
+          else
+            PERCENT="0"
+          fi
+          
+          echo "v1_total=$V1_TOTAL" >> $GITHUB_OUTPUT
+          echo "v1_uf=$V1_UF" >> $GITHUB_OUTPUT
+          echo "v1_fast=$V1_FAST" >> $GITHUB_OUTPUT
+          echo "v1_norm=$V1_NORM" >> $GITHUB_OUTPUT
+          
+          echo "v2_total=$V2_TOTAL" >> $GITHUB_OUTPUT
+          echo "v2_uf=$V2_UF" >> $GITHUB_OUTPUT
+          echo "v2_fast=$V2_FAST" >> $GITHUB_OUTPUT
+          echo "v2_norm=$V2_NORM" >> $GITHUB_OUTPUT
+          
+          echo "diff_total=$DIFF_TOTAL" >> $GITHUB_OUTPUT
+          echo "filtered_percent=$PERCENT" >> $GITHUB_OUTPUT
+          
+          echo ""
+          echo "=============================================="
+          echo "📊 COMPARISON V1 vs V2"
+          echo "=============================================="
+          echo "              V1       V2      Diff"
+          echo "─────────────────────────────────────"
+          printf "💎 Ultra Fast  %5d    %5d   %+5d\n" $V1_UF $V2_UF $DIFF_UF
+          printf "⚡ Fast        %5d    %5d   %+5d\n" $V1_FAST $V2_FAST $DIFF_FAST
+          printf "✅ Normal      %5d    %5d   %+5d\n" $V1_NORM $V2_NORM $DIFF_NORM
+          echo "─────────────────────────────────────"
+          printf "📊 TOTAL       %5d    %5d   %+5d\n" $V1_TOTAL $V2_TOTAL $DIFF_TOTAL
+          echo ""
+          echo "📉 V2 filtered: $FILTERED nodes ($PERCENT%)"
+          echo "=============================================="
+
+      - name: Update Stats File
+        run: |
+          cd hpp
+          
+          # Создаём файл статистики
+          cat > stats.md << EOF
+          # L7 Checker Statistics
+
+          Updated: $(date +'%Y-%m-%d %H:%M UTC')
+
+          ## V1 (Standard) vs V2 (TSPU Check)
+
+          | Category | V1 | V2 | Diff |
+          |----------|----|----|------|
+          | 💎 Ultra Fast | ${{ steps.stats.outputs.v1_uf }} | ${{ steps.stats.outputs.v2_uf }} | ${{ steps.stats.outputs.diff_uf }} |
+          | ⚡ Fast | ${{ steps.stats.outputs.v1_fast }} | ${{ steps.stats.outputs.v2_fast }} | ${{ steps.stats.outputs.diff_fast }} |
+          | ✅ Normal | ${{ steps.stats.outputs.v1_norm }} | ${{ steps.stats.outputs.v2_norm }} | ${{ steps.stats.outputs.diff_norm }} |
+          | **📊 Total** | **${{ steps.stats.outputs.v1_total }}** | **${{ steps.stats.outputs.v2_total }}** | **${{ steps.stats.outputs.diff_total }}** |
+
+          ### TSPU Filtering
+
+          V2 filtered **${{ steps.stats.outputs.filtered_percent }}%** of nodes that passed V1 but failed TSPU checks.
+
+          **What V2 checks:**
+          - ✅ Strong Mode: 3 consecutive requests must pass
+          - ✅ Throttle Detection: Response time < 3s
+          - ✅ Stability: 2 verification cycles
+          - ✅ HTTPS Check: gstatic/generate_204
+          EOF
+
+          git add stats.md
+          git commit -m "Update comparison stats: $(date +'%Y-%m-%d %H:%M')" || echo "No stats changes"
+          git push
+
+      - name: Send Telegram Comparison
+        if: always()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MESSAGE="📊 *V1 vs V2 Comparison* 📊%0A%0A"
+          MESSAGE+="┃ Category ┃ V1 ┃ V2 ┃ Diff ┃%0A"
+          MESSAGE+="┃━━━━━━━━━━┃━━━━┃━━━━┃━━━━━━┃%0A"
+          MESSAGE+="┃ 💎 UF ┃ ${{ steps.stats.outputs.v1_uf }} ┃ ${{ steps.stats.outputs.v2_uf }} ┃ ${{ steps.stats.outputs.diff_uf }} ┃%0A"
+          MESSAGE+="┃ ⚡ Fast ┃ ${{ steps.stats.outputs.v1_fast }} ┃ ${{ steps.stats.outputs.v2_fast }} ┃ ${{ steps.stats.outputs.diff_fast }} ┃%0A"
+          MESSAGE+="┃ ✅ Norm ┃ ${{ steps.stats.outputs.v1_norm }} ┃ ${{ steps.stats.outputs.v2_norm }} ┃ ${{ steps.stats.outputs.diff_norm }} ┃%0A"
+          MESSAGE+="┃━━━━━━━━━━┃━━━━┃━━━━┃━━━━━━┃%0A"
+          MESSAGE+="┃ *TOTAL* ┃ *${{ steps.stats.outputs.v1_total }}* ┃ *${{ steps.stats.outputs.v2_total }}* ┃ *${{ steps.stats.outputs.diff_total }}* ┃%0A%0A"
+          MESSAGE+="📉 V2 filtered: ${{ steps.stats.outputs.filtered_percent }}%"
+
+          curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            -d "chat_id=$CHAT_ID" \
+            -d "text=$MESSAGE" \
+            -d "parse_mode=Markdown"
