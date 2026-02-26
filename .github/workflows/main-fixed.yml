@@ -1,8 +1,8 @@
-name: L7 Smart Checker (Matrix)
+name: L7 Smart Checker (Matrix) - FIXED
 on:
   schedule:
     - cron: '17 */1 * * *' # Запуск каждый час
-  workflow_dispatch: # Позволяет запустить workflow вручную
+  workflow_dispatch:
     inputs:
       verbose:
         description: 'Enable verbose debug output'
@@ -34,24 +34,17 @@ jobs:
 
       - name: Combine and Split Lists
         run: |
-          # Объединяем файлы
           cat ultra_elite_raw.txt business_raw.txt > combined_input_full.txt
-
-          # Убираем пустые строки на всякий случай
           sed -i '/^$/d' combined_input_full.txt
-
-          # Определяем размер блока (600 строк на воркер)
           CHUNK_SIZE=600
           mkdir -p input_chunks
           split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
-
           echo "Created chunks:"
           ls -la input_chunks/
 
       - name: Generate Matrix JSON
         id: set-matrix
         run: |
-          # Используем Python для генерации валидного JSON, так как bash часто ошибается с запятыми
           python3 -c '
           import os, json
           files = sorted([f for f in os.listdir("input_chunks") if f.startswith("chunk_")])
@@ -69,9 +62,10 @@ jobs:
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
-    timeout-minutes: 20  # === ДОБАВЛЕНО: макс. время на job ===
+    # === ИСПРАВЛЕНО: добавлен timeout ===
+    timeout-minutes: 15
     strategy:
-      fail-fast: false # Если один чанк упадет, остальные продолжат работу
+      fail-fast: false
       matrix:
         include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
@@ -89,20 +83,25 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: true  # Кэширование включено
+          cache: false  # Отключаем кэш, т.к. нет go.sum
 
       - name: Setup Warp
         uses: fscarmen/warp-on-actions@v1.1
         with:
           stack: dual
 
-      # === ДОБАВЛЕНО: проверка что Warp работает ===
-      - name: Wait for Warp to stabilize
+      # === ИСПРАВЛЕНО: проверка что Warp работает ===
+      - name: Verify Warp Connection
         run: |
-          echo "Waiting for Warp to stabilize..."
-          sleep 3
-          echo "Testing connectivity..."
-          curl -s4m10 https://www.gstatic.com/generate_204 -o /dev/null && echo "✅ Connectivity OK" || echo "⚠️ Connectivity issues"
+          echo "Testing Warp connectivity..."
+          for i in 1 2 3; do
+            if curl -s4m5 --retry 2 https://www.gstatic.com/generate_204 -o /dev/null; then
+              echo "✅ Warp is working (attempt $i)"
+              break
+            fi
+            echo "⚠️ Warp not ready, waiting... (attempt $i)"
+            sleep 2
+          done
 
       - name: Fetch Whitelist
         run: |
@@ -115,20 +114,16 @@ jobs:
 
       - name: Build and Run Checker
         run: |
-          # === ИСПРАВЛЕНО: используем готовый go.mod из репозитория ===
-          # Если go.mod нет, создаём и загружаем зависимости
-          if [ ! -f go.mod ]; then
-            go mod init checker
-            go get github.com/oschwald/geoip2-golang@v1.9.0
-            go get golang.org/x/net@v0.23.0
-            go mod tidy
-          fi
+          go mod init checker || true
+          
+          # === ИСПРАВЛЕНО: фиксируем версию golang.org/x/net ===
+          go get github.com/oschwald/geoip2-golang@latest
+          go get golang.org/x/net@v0.23.0  # Фиксированная версия для Go 1.22
+          go mod tidy
 
-          # Сборка
           go build -o checker main.go
           chmod +x checker
 
-          # Запуск с опциональным verbose
           VERBOSE_FLAG=""
           if [ "${{ inputs.verbose }}" = "true" ]; then
             VERBOSE_FLAG="-verbose"
@@ -160,7 +155,7 @@ jobs:
   combine-results:
     needs: [prepare-inputs, check-chunks]
     runs-on: ubuntu-latest
-    if: always() # Запускать даже если какие-то чанки упали
+    if: always()
     steps:
       - name: Download All Results
         uses: actions/download-artifact@v4
@@ -172,8 +167,6 @@ jobs:
       - name: Combine Files
         run: |
           touch uf.txt fast.txt norm.txt
-
-          # Проходим по всем папкам результатов
           find all_results -name "uf.txt" -exec cat {} + >> uf.txt
           find all_results -name "fast.txt" -exec cat {} + >> fast.txt
           find all_results -name "norm.txt" -exec cat {} + >> norm.txt
