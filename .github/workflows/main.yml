@@ -183,12 +183,22 @@ jobs:
 
       - name: Push to HPP Repo
         env:
+          GTA_TOKEN: ${{ secrets.GTA_TOKEN }}
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          git clone https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/shrau77/hpp.git target_repo
+          TOKEN="${GTA_TOKEN:-$PAT_TOKEN}"
+          if [ -z "$TOKEN" ]; then
+            echo "❌ No token available"
+            exit 1
+          fi
+          
+          git clone https://x-access-token:${TOKEN}@github.com/shrau77/hpp.git target_repo
           cd target_repo
           git config user.name "L7-Matrix-Bot"
           git config user.email "bot@github.com"
+          
+          # Pull latest changes first
+          git pull origin main || git pull origin master || true
 
           cp ../uf.txt .
           cp ../fast.txt .
@@ -196,7 +206,7 @@ jobs:
 
           git add uf.txt fast.txt norm.txt
           git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
-          git push
+          git push origin main || git push origin master
 
       - name: Send Telegram Notification
         if: success()
