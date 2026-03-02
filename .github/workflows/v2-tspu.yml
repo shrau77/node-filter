@@ -1,7 +1,7 @@
 name: L7 Checker V2 (TSPU Check)
 on:
   schedule:
-    - cron: '47 */2 * * *' # Запуск каждые 2 часа (смещение относительно v1)
+    - cron: '48 */2 * * *' # Запуск каждые 2 часа (смещение относительно v1)
   workflow_dispatch:
     inputs:
       verbose:
