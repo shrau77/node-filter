@@ -1,8 +1,8 @@
-name: L7 Smart Checker (Matrix)
+name: L7 Smart Checker (Matrix - All Protocols)
 on:
   schedule:
-    - cron: '16 */1 * * *' # Запуск каждый час
-  workflow_dispatch: # Позволяет запустить workflow вручную
+    - cron: '16 */1 * * *'
+  workflow_dispatch:
     inputs:
       verbose:
         description: 'Enable verbose debug output'
@@ -29,29 +29,39 @@ jobs:
 
       - name: Fetch All Node Lists
         run: |
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/ultra_elite.txt" -o ultra_elite_raw.txt
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/business.txt" -o business_raw.txt
+          # Основные списки из hpp
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/ultra_elite.txt" -o ultra_elite_raw.txt || true
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/business.txt" -o business_raw.txt || true
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/trojan_only.txt" -o trojan_raw.txt || true
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/hysteria2_only.txt" -o hy2_raw.txt || true
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/tuic_only.txt" -o tuic_raw.txt || true
+          
+          # Backup источники
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/all_mixed.txt" -o all_mixed.txt || true
 
       - name: Combine and Split Lists
         run: |
-          # Объединяем файлы
-          cat ultra_elite_raw.txt business_raw.txt > combined_input_full.txt
-
-          # Убираем пустые строки на всякий случай
+          # Объединяем все файлы
+          cat ultra_elite_raw.txt business_raw.txt trojan_raw.txt hy2_raw.txt tuic_raw.txt all_mixed.txt 2>/dev/null > combined_input_full.txt || true
+          
+          # Убираем пустые строки и дубликаты
           sed -i '/^$/d' combined_input_full.txt
-
-          # Определяем размер блока (600 строк на воркер)
-          CHUNK_SIZE=600
+          sort -u combined_input_full.txt -o combined_input_full.txt
+          
+          TOTAL_LINES=$(wc -l < combined_input_full.txt)
+          echo "📊 Total unique nodes: $TOTAL_LINES"
+          
+          # Определяем размер блока (500 строк на воркер)
+          CHUNK_SIZE=500
           mkdir -p input_chunks
           split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
-
+          
           echo "Created chunks:"
           ls -la input_chunks/
 
       - name: Generate Matrix JSON
         id: set-matrix
         run: |
-          # Используем Python для генерации валидного JSON, так как bash часто ошибается с запятыми
           python3 -c '
           import os, json
           files = sorted([f for f in os.listdir("input_chunks") if f.startswith("chunk_")])
@@ -69,9 +79,9 @@ jobs:
   check-chunks:
     needs: prepare-inputs
     runs-on: ubuntu-latest
-    timeout-minutes: 20  # === ДОБАВЛЕНО: макс. время на job ===
+    timeout-minutes: 20
     strategy:
-      fail-fast: false # Если один чанк упадет, остальные продолжат работу
+      fail-fast: false
       matrix:
         include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
@@ -84,29 +94,32 @@ jobs:
           name: input-chunks
           path: input_chunks
 
-      # === ИСПРАВЛЕНО: Go 1.22 вместо 1.21 ===
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: false  # Кэш отключен - нет go.sum в репозитории
+          cache: false
 
       - name: Setup Warp
         uses: fscarmen/warp-on-actions@v1.1
         with:
           stack: dual
 
-      # === ДОБАВЛЕНО: проверка что Warp работает ===
-      - name: Wait for Warp to stabilize
+      - name: Wait for Warp
         run: |
           echo "Waiting for Warp to stabilize..."
-          sleep 3
-          echo "Testing connectivity..."
+          sleep 5
           curl -s4m10 https://www.gstatic.com/generate_204 -o /dev/null && echo "✅ Connectivity OK" || echo "⚠️ Connectivity issues"
 
-      - name: Fetch Whitelist
+      - name: Fetch SNI Whitelist
         run: |
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o whitelist.txt || touch whitelist.txt
+          # Синхронизация с zhopa-bobra
+          curl -L "https://raw.githubusercontent.com/shrau77/zhopa-bobra/main/results/elite_sni.txt" -o remote_sni.txt || touch remote_sni.txt
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o local_sni.txt || touch local_sni.txt
+          
+          # Объединяем
+          cat remote_sni.txt local_sni.txt | sort -u > whitelist.txt
+          echo "📋 Loaded $(wc -l < whitelist.txt) SNI domains"
 
       - name: Prepare Input File
         run: |
@@ -115,20 +128,15 @@ jobs:
 
       - name: Build and Run Checker
         run: |
-          # Если go.mod нет, создаём
           if [ ! -f go.mod ]; then
             go mod init checker
           fi
-
-          # Всегда загружаем зависимости и создаём go.sum
+          
           go mod download
           go mod tidy
-
-          # Сборка
           go build -o checker main.go
           chmod +x checker
 
-          # Запуск с опциональным verbose
           VERBOSE_FLAG=""
           if [ "${{ inputs.verbose }}" = "true" ]; then
             VERBOSE_FLAG="-verbose"
@@ -145,10 +153,12 @@ jobs:
             uf.txt
             fast.txt
             norm.txt
+            hy2.txt
+            tuic.txt
           retention-days: 1
           if-no-files-found: ignore
 
-      - name: Upload Debug Log (if exists)
+      - name: Upload Debug Log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -160,7 +170,7 @@ jobs:
   combine-results:
     needs: [prepare-inputs, check-chunks]
     runs-on: ubuntu-latest
-    if: always() # Запускать даже если какие-то чанки упали
+    if: always()
     steps:
       - name: Download All Results
         uses: actions/download-artifact@v4
@@ -171,15 +181,22 @@ jobs:
 
       - name: Combine Files
         run: |
-          touch uf.txt fast.txt norm.txt
-
-          # Проходим по всем папкам результатов
-          find all_results -name "uf.txt" -exec cat {} + >> uf.txt
-          find all_results -name "fast.txt" -exec cat {} + >> fast.txt
-          find all_results -name "norm.txt" -exec cat {} + >> norm.txt
-
+          touch uf.txt fast.txt norm.txt hy2.txt tuic.txt
+          
+          find all_results -name "uf.txt" -exec cat {} + 2>/dev/null | sort -u > uf_combined.txt || true
+          find all_results -name "fast.txt" -exec cat {} + 2>/dev/null | sort -u > fast_combined.txt || true
+          find all_results -name "norm.txt" -exec cat {} + 2>/dev/null | sort -u > norm_combined.txt || true
+          find all_results -name "hy2.txt" -exec cat {} + 2>/dev/null | sort -u > hy2_combined.txt || true
+          find all_results -name "tuic.txt" -exec cat {} + 2>/dev/null | sort -u > tuic_combined.txt || true
+          
+          mv uf_combined.txt uf.txt 2>/dev/null || true
+          mv fast_combined.txt fast.txt 2>/dev/null || true
+          mv norm_combined.txt norm.txt 2>/dev/null || true
+          mv hy2_combined.txt hy2.txt 2>/dev/null || true
+          mv tuic_combined.txt tuic.txt 2>/dev/null || true
+          
           echo "Combined stats:"
-          wc -l uf.txt fast.txt norm.txt
+          wc -l uf.txt fast.txt norm.txt hy2.txt tuic.txt 2>/dev/null || true
 
       - name: Push to HPP Repo
         env:
@@ -197,15 +214,16 @@ jobs:
           git config user.name "L7-Matrix-Bot"
           git config user.email "bot@github.com"
           
-          # Pull latest changes first
           git pull origin main || git pull origin master || true
 
-          cp ../uf.txt .
-          cp ../fast.txt .
-          cp ../norm.txt .
+          cp ../uf.txt . 2>/dev/null || true
+          cp ../fast.txt . 2>/dev/null || true
+          cp ../norm.txt . 2>/dev/null || true
+          cp ../hy2.txt . 2>/dev/null || true
+          cp ../tuic.txt . 2>/dev/null || true
 
-          git add uf.txt fast.txt norm.txt
-          git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
+          git add uf.txt fast.txt norm.txt hy2.txt tuic.txt 2>/dev/null || true
+          git commit -m "L7 Matrix Update: $(date +'%Y-%m-%d %H:%M') | All Protocols" || echo "No changes to commit"
           git push origin main || git push origin master
 
       - name: Send Telegram Notification
@@ -214,11 +232,13 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          UF=$(grep -c "://" uf.txt || echo 0)
-          FAST=$(grep -c "://" fast.txt || echo 0)
-          NORM=$(grep -c "://" norm.txt || echo 0)
+          UF=$(grep -c "://" uf.txt 2>/dev/null || echo 0)
+          FAST=$(grep -c "://" fast.txt 2>/dev/null || echo 0)
+          NORM=$(grep -c "://" norm.txt 2>/dev/null || echo 0)
+          HY2=$(grep -c "://" hy2.txt 2>/dev/null || echo 0)
+          TUIC=$(grep -c "://" tuic.txt 2>/dev/null || echo 0)
 
-          MESSAGE="🚀 *L7 Matrix Check Results* 🚀%0A%0A💎 *Ultra Fast:* $UF%0A⚡ *Fast:* $FAST%0A✅ *Normal:* $NORM%0A%0A📦 _Results pushed to HPP_"
+          MESSAGE="🚀 *L7 Matrix Check Results* 🚀%0A%0A💎 *Ultra Fast:* $UF%0A⚡ *Fast:* $FAST%0A✅ *Normal:* $NORM%0A🚀 *Hysteria2:* $HY2%0A🔷 *TUIC:* $TUIC%0A%0A📦 _Results pushed to HPP_"
 
           curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID" \

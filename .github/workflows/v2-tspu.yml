@@ -1,7 +1,7 @@
-name: L7 Checker V2 (TSPU Check)
+name: L7 Checker V2 (TSPU Check - All Protocols)
 on:
   schedule:
-    - cron: '48 */2 * * *' # Запуск каждые 2 часа (смещение относительно v1)
+    - cron: '48 */2 * * *'
   workflow_dispatch:
     inputs:
       verbose:
@@ -37,18 +37,27 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Fetch All Node Lists
+      - name: Fetch All Node Lists (All Protocols)
         run: |
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/ultra_elite.txt" -o ultra_elite_raw.txt
-          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/business.txt" -o business_raw.txt
+          # VLESS/Trojan/SS
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/ultra_elite.txt" -o ultra_elite_raw.txt || true
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/business.txt" -o business_raw.txt || true
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/trojan_only.txt" -o trojan_raw.txt || true
+          
+          # Hysteria2/TUIC (для V2 - только xray-протоколы)
+          curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/output/all_mixed.txt" -o all_mixed.txt || true
 
       - name: Combine and Split Lists
         run: |
-          cat ultra_elite_raw.txt business_raw.txt > combined_input_full.txt
+          cat ultra_elite_raw.txt business_raw.txt trojan_raw.txt all_mixed.txt 2>/dev/null > combined_input_full.txt || true
           sed -i '/^$/d' combined_input_full.txt
+          sort -u combined_input_full.txt -o combined_input_full.txt
           
-          # V2 работает строже - меньше чанк, т.к. проверка дольше
-          CHUNK_SIZE=300
+          TOTAL=$(wc -l < combined_input_full.txt)
+          echo "📊 Total unique nodes for V2: $TOTAL"
+          
+          # V2 работает строже - меньше чанк
+          CHUNK_SIZE=400
           mkdir -p input_chunks
           split -l $CHUNK_SIZE combined_input_full.txt input_chunks/chunk_
           
@@ -78,7 +87,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 10  # Уменьшено - V2 более ресурсоёмкий
+      max-parallel: 10
       matrix:
         include: ${{ fromJson(needs.prepare-inputs.outputs.matrix_json) }}
     steps:
@@ -95,84 +104,72 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: false  # Отключаем кэш - нет go.sum в репозитории
+          cache: false
 
       - name: Setup Warp
         uses: fscarmen/warp-on-actions@v1.1
         with:
           stack: dual
 
-      - name: Wait for Warp to stabilize
+      - name: Wait for Warp
         run: |
-          echo "⏳ Waiting for Warp to stabilize..."
+          echo "⏳ Waiting for Warp..."
           sleep 5
-          echo "Testing connectivity..."
           for i in 1 2 3; do
             if curl -s4m10 https://www.gstatic.com/generate_204 -o /dev/null; then
-              echo "✅ Warp is working (attempt $i)"
+              echo "✅ Warp OK (attempt $i)"
               break
             fi
-            echo "⚠️ Attempt $i failed, waiting..."
+            echo "⚠️ Attempt $i failed"
             sleep 3
           done
 
-      - name: Fetch Whitelist
+      - name: Fetch SNI Whitelist (synced with zhopa-bobra)
         run: |
+          # Скачиваем основной whitelist
           curl -L "https://raw.githubusercontent.com/shrau77/hpp/main/target_sni.txt" -o whitelist.txt || touch whitelist.txt
+          
+          # Синхронизируем с zhopa-bobra
+          curl -L "https://raw.githubusercontent.com/shrau77/zhopa-bobra/main/results/elite_sni.txt" -o remote_sni.txt || touch remote_sni.txt
+          
+          # Объединяем
+          cat whitelist.txt remote_sni.txt | sort -u > whitelist_combined.txt
+          mv whitelist_combined.txt whitelist.txt
+          
+          echo "📋 Loaded $(wc -l < whitelist.txt) SNI domains"
 
       - name: Prepare Input File
         run: |
           cp "input_chunks/${{ matrix.input_file }}" input.txt
-          echo "Processing ${{ matrix.input_file }} with $(wc -l < input.txt) lines"
+          echo "Processing ${{ matrix.input_file }}: $(wc -l < input.txt) lines"
 
-      - name: Build V2 Checker (TSPU Edition)
+      - name: Build V2 Checker
         run: |
           cd v2-tspu-check
-          
-          # Загружаем зависимости
           go mod download
           go mod tidy
-          
           go build -o checker-v2 main.go
           chmod +x checker-v2
-          
-          # Копируем бинарник в корень
           cp checker-v2 ..
 
-      - name: Run V2 Checker with TSPU Checks
+      - name: Run V2 Checker (TSPU + Anti-Iran)
         run: |
-          # Формируем флаги
           VERBOSE_FLAG=""
-          STRONG_FLAG=""
-          HTTPS_FLAG=""
+          STRONG_FLAG="-strong"
+          HTTPS_FLAG="-https"
           
           if [ "${{ inputs.verbose }}" = "true" ]; then
             VERBOSE_FLAG="-verbose"
-            echo "🔊 Verbose mode ENABLED"
           fi
           
-          if [ "${{ inputs.strong_mode }}" = "true" ]; then
-            STRONG_FLAG="-strong"
-            echo "💪 Strong mode ENABLED (3 consecutive requests)"
-          fi
+          echo "🚀 V2 TSPU Check - Strong Mode + Anti-Iran Filters"
+          echo "   Strong: 3 consecutive requests"
+          echo "   HTTPS: gstatic generate_204"
+          echo "   Filters: Banned TLDs, Iranian patterns, DDNS"
           
-          if [ "${{ inputs.https_check }}" = "true" ]; then
-            HTTPS_FLAG="-https"
-            echo "🔒 HTTPS check ENABLED"
-          fi
-
-          echo ""
-          echo "=============================================="
-          echo "🚀 Running V2 TSPU Check"
-          echo "   Strong Mode: ${{ inputs.strong_mode }}"
-          echo "   HTTPS Check: ${{ inputs.https_check }}"
-          echo "=============================================="
-          echo ""
-          
-          # Запускаем из корня - xray и GeoIP скачаются сюда
           ./checker-v2 -input input.txt -whitelist whitelist.txt $VERBOSE_FLAG $STRONG_FLAG $HTTPS_FLAG
 
-      - name: Upload Results V2
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
           name: results-v2-${{ matrix.input_file }}
@@ -183,7 +180,7 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
-      - name: Upload Debug Log V2
+      - name: Upload Debug Log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -197,50 +194,53 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Download All Results V2
+      - name: Download All Results
         uses: actions/download-artifact@v4
         with:
           pattern: results-v2-*
           path: all_results
           merge-multiple: false
 
-      - name: Combine Files V2
+      - name: Combine Files
         run: |
           touch uf_v2.txt fast_v2.txt norm_v2.txt
-
+          
           find all_results -name "uf_v2.txt" -exec cat {} + >> uf_v2.txt || true
           find all_results -name "fast_v2.txt" -exec cat {} + >> fast_v2.txt || true
           find all_results -name "norm_v2.txt" -exec cat {} + >> norm_v2.txt || true
+          
+          # Убираем дубликаты
+          sort -u uf_v2.txt -o uf_v2.txt 2>/dev/null || true
+          sort -u fast_v2.txt -o fast_v2.txt 2>/dev/null || true
+          sort -u norm_v2.txt -o norm_v2.txt 2>/dev/null || true
+          
+          echo "V2 Results:"
+          wc -l uf_v2.txt fast_v2.txt norm_v2.txt || true
 
-          echo "Combined V2 stats:"
-          wc -l uf_v2.txt fast_v2.txt norm_v2.txt || echo "No results found"
-
-      - name: Push V2 Results to HPP Repo
+      - name: Push to HPP
         env:
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           git clone https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/shrau77/hpp.git target_repo
           cd target_repo
-          git config user.name "L7-V2-TSPU-Bot"
+          git config user.name "V2-TSPU-Bot"
           git config user.email "bot@github.com"
-
-          # Создаём папку для v2 если нет
+          
           mkdir -p v2
-
-          cp ../uf_v2.txt v2/ 2>/dev/null || echo "No uf_v2.txt"
-          cp ../fast_v2.txt v2/ 2>/dev/null || echo "No fast_v2.txt"
-          cp ../norm_v2.txt v2/ 2>/dev/null || echo "No norm_v2.txt"
-
-          # Также копируем в корень как альтернативный источник
+          
+          cp ../uf_v2.txt v2/ 2>/dev/null || true
+          cp ../fast_v2.txt v2/ 2>/dev/null || true
+          cp ../norm_v2.txt v2/ 2>/dev/null || true
+          
           cp ../uf_v2.txt . 2>/dev/null || true
           cp ../fast_v2.txt . 2>/dev/null || true
           cp ../norm_v2.txt . 2>/dev/null || true
-
+          
           git add v2/ uf_v2.txt fast_v2.txt norm_v2.txt 2>/dev/null || true
-          git commit -m "V2 TSPU Check Update: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
+          git commit -m "V2 TSPU Update: $(date +'%Y-%m-%d %H:%M') | Anti-Iran Filters" || echo "No changes"
           git push
 
-      - name: Send Telegram Notification V2
+      - name: Telegram Notification
         if: success()
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -250,7 +250,7 @@ jobs:
           FAST=$(grep -c "://" fast_v2.txt 2>/dev/null || echo 0)
           NORM=$(grep -c "://" norm_v2.txt 2>/dev/null || echo 0)
 
-          MESSAGE="🛡️ *L7 V2 TSPU Check Results* 🛡️%0A%0A💎 *Ultra Fast:* $UF%0A⚡ *Fast:* $FAST%0A✅ *Normal:* $NORM%0A%0A🔬 *TSPU-verified nodes*%0A📦 _Results pushed to HPP/v2/_"
+          MESSAGE="🛡️ *V2 TSPU Results* 🛡️%0A%0A💎 UF: $UF%0A⚡ Fast: $FAST%0A✅ Norm: $NORM%0A%0A🔬 TSPU-verified%0A🚫 Anti-Iran filters"
 
           curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID" \
